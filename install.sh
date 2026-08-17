@@ -9,12 +9,14 @@
 # Что делает скрипт автоматически:
 #   1. Определяет публичный IP сервера
 #   2. Устанавливает Docker (если не установлен)
-#   3. Клонирует репозиторий в /opt/anyrest
-#   4. Генерирует TLS-сертификаты с IP сервера
-#   5. Устанавливает CA в системное хранилище
-#   6. Создаёт .env с безопасным случайным секретом
-#   7. Собирает и запускает Docker Compose
-#   8. Выводит адрес — просто открываете в браузере
+#   3. Настраивает зеркало Docker Hub (обход rate limit 429)
+#   4. Загружает базовые образы с повторами (до 5 попыток)
+#   5. Клонирует репозиторий в /opt/anyrest
+#   6. Генерирует TLS-сертификаты с IP сервера
+#   7. Устанавливает CA в системное хранилище
+#   8. Создаёт .env с безопасным случайным секретом
+#   9. Собирает и запускает Docker Compose
+#  10. Выводит адрес — просто открываете в браузере
 #
 # Опции:
 #   --agent    Установить только агент (для управляемого ПК)
@@ -65,14 +67,12 @@ detect_ip() {
   fi
 
   info "Определяю публичный IP..."
-  # Пробуем несколько сервисов по очереди
   for svc in \
       "https://api.ipify.org" \
       "https://ifconfig.me/ip" \
       "https://icanhazip.com" \
       "https://ipinfo.io/ip"; do
     ip=$(curl -fsSL --max-time 5 "$svc" 2>/dev/null | tr -d '[:space:]') || continue
-    # Проверяем что это валидный IP
     if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
       SERVER_IP="$ip"
       ok "Публичный IP: $SERVER_IP"
@@ -80,7 +80,6 @@ detect_ip() {
     fi
   done
 
-  # Fallback — берём первый не-localhost адрес интерфейса
   SERVER_IP=$(ip -o -4 addr show scope global 2>/dev/null \
     | awk '{print $4}' | cut -d/ -f1 | head -1) || true
 
@@ -104,7 +103,6 @@ install_docker() {
   curl -fsSL https://get.docker.com | $SUDO bash -s -- --quiet 2>&1 \
     | grep -E 'Installing|installed|already' || true
 
-  # Запускаем dockerd если не запущен
   if command -v systemctl &>/dev/null; then
     $SUDO systemctl enable --now docker 2>/dev/null || true
   fi
@@ -113,7 +111,98 @@ install_docker() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. Получение исходного кода
+# 3. Настройка зеркала Docker Hub (обход ошибки 429 Too Many Requests)
+# ─────────────────────────────────────────────────────────────────────────────
+configure_mirror() {
+  local cfg="/etc/docker/daemon.json"
+
+  # Пропускаем если зеркало уже настроено
+  if $SUDO grep -q "registry-mirrors" "$cfg" 2>/dev/null; then
+    ok "Зеркало Docker Hub уже настроено."
+    return
+  fi
+
+  info "Настраиваю зеркало Docker Hub (mirror.gcr.io) для обхода rate limit..."
+  $SUDO mkdir -p /etc/docker
+
+  # Если daemon.json уже существует и содержит другие настройки — добавляем поле
+  if [[ -f "$cfg" ]]; then
+    # Backup
+    $SUDO cp "$cfg" "${cfg}.bak"
+    # Добавляем registry-mirrors через python (jq может отсутствовать)
+    $SUDO python3 -c "
+import json, sys
+with open('$cfg') as f:
+    d = json.load(f)
+d.setdefault('registry-mirrors', [])
+mirrors = ['https://mirror.gcr.io', 'https://dockerhub.azk8s.cn']
+for m in mirrors:
+    if m not in d['registry-mirrors']:
+        d['registry-mirrors'].append(m)
+with open('$cfg', 'w') as f:
+    json.dump(d, f, indent=2)
+" 2>/dev/null || \
+    $SUDO tee "$cfg" > /dev/null <<'DAEMON'
+{
+  "registry-mirrors": ["https://mirror.gcr.io", "https://dockerhub.azk8s.cn"]
+}
+DAEMON
+  else
+    $SUDO tee "$cfg" > /dev/null <<'DAEMON'
+{
+  "registry-mirrors": ["https://mirror.gcr.io", "https://dockerhub.azk8s.cn"]
+}
+DAEMON
+  fi
+
+  # Перезапускаем Docker чтобы зеркало вступило в силу
+  if command -v systemctl &>/dev/null; then
+    info "Перезапускаю Docker daemon..."
+    $SUDO systemctl restart docker
+    sleep 4
+  fi
+
+  ok "Зеркало Docker Hub настроено."
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Предварительная загрузка базовых образов (с повторами)
+# ─────────────────────────────────────────────────────────────────────────────
+# Загружаем образы заранее, до сборки, чтобы docker compose build
+# не получил 429 в середине компиляции.
+pull_with_retry() {
+  local image="$1"
+  local max=5
+  local delay=30
+
+  for attempt in $(seq 1 $max); do
+    info "Загружаю $image (попытка $attempt/$max)..."
+    if docker pull "$image" 2>&1; then
+      ok "Загружен: $image"
+      return 0
+    fi
+    if [[ $attempt -lt $max ]]; then
+      warn "Ошибка загрузки. Следующая попытка через ${delay}с..."
+      sleep "$delay"
+      delay=$((delay + 15))  # увеличиваем задержку с каждой попыткой
+    fi
+  done
+
+  warn "Не удалось загрузить $image после $max попыток. Продолжаю (образ может быть в кэше)."
+  return 0  # не прерываем установку — образ может быть закэширован
+}
+
+pull_base_images() {
+  info "Загружаю базовые Docker-образы..."
+  # Порядок важен: загружаем builder-образы первыми (они самые тяжёлые)
+  pull_with_retry "golang:1.26-alpine"
+  pull_with_retry "alpine:3.21"
+  pull_with_retry "nginx:1.27-alpine"
+  ok "Базовые образы загружены."
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Получение исходного кода
 # ─────────────────────────────────────────────────────────────────────────────
 fetch_repo() {
   if [[ -d "$INSTALL_DIR/.git" ]]; then
@@ -136,13 +225,12 @@ fetch_repo() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. Генерация сертификатов
+# 6. Генерация сертификатов
 # ─────────────────────────────────────────────────────────────────────────────
 generate_certs() {
   local cert_dir="$INSTALL_DIR/certs"
 
   if [[ -f "$cert_dir/server.crt" && -f "$cert_dir/server.key" ]]; then
-    # Проверяем что сертификат содержит наш IP
     if openssl x509 -in "$cert_dir/server.crt" -text -noout 2>/dev/null \
         | grep -q "IP Address:$SERVER_IP"; then
       ok "Сертификаты уже существуют для IP $SERVER_IP."
@@ -162,7 +250,7 @@ generate_certs() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. Установка CA в системное хранилище браузеров
+# 7. Установка CA в системное хранилище браузеров
 # ─────────────────────────────────────────────────────────────────────────────
 install_ca() {
   local ca="$INSTALL_DIR/certs/ca.crt"
@@ -178,7 +266,6 @@ install_ca() {
     $SUDO update-ca-trust extract 2>/dev/null || true
   fi
 
-  # NSS (Chrome/Firefox на Linux)
   if command -v certutil &>/dev/null; then
     for d in "$HOME/.pki/nssdb" "$HOME/.mozilla/firefox/"*; do
       [[ -d "$d" ]] && certutil -A -d "sql:$d" -n "Anyrest Root CA" \
@@ -190,7 +277,7 @@ install_ca() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. Создание .env
+# 8. Создание .env
 # ─────────────────────────────────────────────────────────────────────────────
 create_env() {
   local env="$INSTALL_DIR/.env"
@@ -208,19 +295,23 @@ EOF
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 7. Запуск Docker Compose
+# 9. Запуск Docker Compose
+# Образы уже загружены функцией pull_base_images, поэтому используем
+# --pull=never чтобы docker compose не делал повторных pull-запросов.
 # ─────────────────────────────────────────────────────────────────────────────
 start_stack() {
-  info "Собираю и запускаю Docker-контейнеры (это займёт ~3–5 минут)..."
+  info "Собираю Docker-образы..."
   cd "$INSTALL_DIR"
 
-  # Останавливаем старые контейнеры если есть
   docker compose down --remove-orphans 2>/dev/null || true
 
-  # Собираем и запускаем (вывод в реальном времени)
-  docker compose up -d --build 2>&1
+  # --pull=never: базовые образы уже загружены, лишние запросы к registry не нужны
+  docker compose build --pull=never 2>&1
 
-  # Ждём пока web-контейнер поднимется (до 60 сек)
+  info "Запускаю контейнеры..."
+  docker compose up -d 2>&1
+
+  # Ждём пока web поднимется (до 60 сек)
   info "Ожидаю запуска сервисов..."
   local i=0
   while [[ $i -lt 60 ]]; do
@@ -235,7 +326,7 @@ start_stack() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 8. Установка агента (для управляемого ПК)
+# 10. Установка агента (для управляемого ПК)
 # ─────────────────────────────────────────────────────────────────────────────
 start_agent() {
   info "Запускаю агент..."
@@ -248,7 +339,6 @@ start_agent() {
   ANYREST_SIGNAL_URL="$signal_url" \
     docker compose -f docker-compose.agent.yml up -d --build --quiet-pull 2>/dev/null
 
-  # Systemd автозапуск
   if command -v systemctl &>/dev/null; then
     $SUDO tee /etc/systemd/system/anyrest-agent.service > /dev/null <<UNIT
 [Unit]
@@ -308,8 +398,11 @@ main() {
 
   detect_ip
   install_docker
+  configure_mirror
 
   if [[ "$AGENT_MODE" == "true" ]]; then
+    pull_with_retry "golang:1.26-alpine"
+    pull_with_retry "alpine:3.21"
     fetch_repo
     create_env
     start_agent
@@ -318,6 +411,7 @@ main() {
     return
   fi
 
+  pull_base_images
   fetch_repo
   generate_certs
   install_ca
