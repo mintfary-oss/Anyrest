@@ -1,16 +1,25 @@
 # ─── Stage 1: Build the React web client ─────────────────────────────────────
+# node:24-alpine ships npm 11, which is required for lockfileVersion 3.
+# We intentionally install from package.json only (no lockfile) so the build
+# never fails due to npm-version / lockfile-version mismatches.
 FROM node:24-alpine AS web-builder
 
 WORKDIR /app
 
-COPY web/package*.json ./
-# Use npm ci without --prefer-offline so all packages are fetched fresh
-RUN npm ci
+# Copy only the package manifest (NOT package-lock.json).
+# npm install resolves versions from semver ranges in package.json,
+# which is more resilient than npm ci in a fresh container context.
+COPY web/package.json ./
 
+# --no-audit   skip network round-trip to the npm audit endpoint
+# --no-fund    suppress funding messages
+# --prefer-offline  use cache if present, avoids redundant registry calls
+RUN npm install --no-audit --no-fund --prefer-offline
+
+# Copy the rest of the source after deps are installed (better layer caching)
 COPY web/ ./
-# In production the signal URL is always wss://<same-host>/ws,
-# so we do NOT bake a static URL into the bundle — the runtime
-# fallback `wss://${window.location.host}/ws` in App.tsx handles it.
+
+# tsc type-check + vite production bundle
 RUN npm run build
 
 # ─── Stage 2: NGINX serving static files ─────────────────────────────────────
