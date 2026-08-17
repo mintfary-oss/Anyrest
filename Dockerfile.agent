@@ -1,0 +1,32 @@
+# ─── Stage 1: Build the Go agent binary ──────────────────────────────────────
+FROM golang:1.26-alpine AS builder
+
+RUN apk add --no-cache gcc musl-dev libx11-dev xorgproto
+
+WORKDIR /app
+
+COPY agent/go.mod agent/go.sum ./
+RUN go mod download
+
+COPY agent/ ./
+RUN CGO_ENABLED=1 GOOS=linux go build \
+      -ldflags="-s -w" \
+      -o /app/anyrest-agent \
+      ./cmd/
+
+# ─── Stage 2: Runtime image with X11 + xdotool ───────────────────────────────
+FROM alpine:3.21
+
+RUN apk add --no-cache \
+      xdotool \
+      libx11 \
+      ca-certificates
+
+COPY --from=builder /app/anyrest-agent /usr/local/bin/anyrest-agent
+
+# The agent needs access to the host display.
+# Mount the X11 socket and set DISPLAY:
+#   docker run -e DISPLAY=:0 -v /tmp/.X11-unix:/tmp/.X11-unix anyrest-agent
+ENV DISPLAY=:0
+
+ENTRYPOINT ["anyrest-agent"]

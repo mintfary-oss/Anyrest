@@ -1,0 +1,26 @@
+# Binaries
+/server/bin/
+/agent/bin/
+*.exe
+
+# Certificates (generated at runtime, do not commit private keys)
+certs/*.pem
+certs/*.key
+certs/*.crt
+!certs/.gitkeep
+
+# Go
+vendor/
+*.test
+
+# Node / Web
+web/node_modules/
+web/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Docker volumes
+data/

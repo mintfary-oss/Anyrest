@@ -1,0 +1,29 @@
+##############################################################################
+# Anyrest Agent — Docker Compose override
+#
+# Run on each host machine you want to control remotely.
+# Requires:
+#   - A running display server (X11 on :0)
+#   - ANYREST_SIGNAL_URL pointing to the server
+#
+# Usage:
+#   ANYREST_SIGNAL_URL=wss://your-server-ip/ws docker compose -f docker-compose.agent.yml up -d
+##############################################################################
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    image: anyrest-agent:latest
+    restart: unless-stopped
+    network_mode: host        # needed for WebRTC P2P ICE candidates
+    environment:
+      DISPLAY: "${DISPLAY:-:0}"
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    command:
+      - "-signal=${ANYREST_SIGNAL_URL:-wss://localhost/ws}"
+      - "-fps=15"
+      - "-quality=75"
+      - "-display=0"
