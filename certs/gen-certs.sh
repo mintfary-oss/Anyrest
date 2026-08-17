@@ -1,32 +1,25 @@
 #!/usr/bin/env bash
 # Anyrest — Certificate Generator
-# Generates a local CA and a server TLS certificate with IP SANs.
-# The CA is then installed into the system trust store so every browser
-# on this machine trusts the certificate without needing a domain name.
+# Generates a local CA and a server TLS certificate with IP SANs so that
+# browsers trust it without a domain name.
 #
 # Usage:
 #   ./gen-certs.sh [--ip <extra-ip>] [--days <validity>] [--out <dir>]
 #
 # Defaults:
 #   --days  3650  (10 years)
-#   --out   ./    (same directory as this script)
+#   --out   ./    (directory of this script)
 set -euo pipefail
 
-###############################################################################
-# Defaults
-###############################################################################
 VALIDITY_DAYS=3650
-OUT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXTRA_IPS=()
+OUT_DIR="$(cd "$(dirname "$0")" && pwd)"
+EXTRA_IPS=""       # space-separated extras
 
-###############################################################################
-# Argument parsing
-###############################################################################
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --ip)    EXTRA_IPS+=("$2"); shift 2 ;;
-    --days)  VALIDITY_DAYS="$2"; shift 2 ;;
-    --out)   OUT_DIR="$2"; shift 2 ;;
+    --ip)    EXTRA_IPS="$EXTRA_IPS $2"; shift 2 ;;
+    --days)  VALIDITY_DAYS="$2";        shift 2 ;;
+    --out)   OUT_DIR="$2";              shift 2 ;;
     *)       echo "Unknown option: $1"; exit 1 ;;
   esac
 done
@@ -35,46 +28,49 @@ mkdir -p "$OUT_DIR"
 cd "$OUT_DIR"
 
 ###############################################################################
-# Collect all local IPs automatically
+# Collect IPs — no process substitution, works in any bash env
 ###############################################################################
 collect_ips() {
-  local ips=("127.0.0.1" "::1")
+  # Always include loopback
+  echo "127.0.0.1"
+  echo "::1"
 
-  # Linux / macOS
+  # Linux: ip command
   if command -v ip &>/dev/null; then
-    while IFS= read -r line; do
-      ips+=("$line")
-    done < <(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
-    while IFS= read -r line; do
-      ips+=("$line")
-    done < <(ip -o -6 addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+    ip -o -4 addr show scope global 2>/dev/null \
+      | awk '{print $4}' | cut -d/ -f1 || true
   elif command -v ifconfig &>/dev/null; then
-    while IFS= read -r line; do
-      ips+=("$line")
-    done < <(ifconfig 2>/dev/null | grep 'inet ' | awk '{print $2}' | grep -v '127.0.0.1')
+    ifconfig 2>/dev/null \
+      | awk '/inet / {print $2}' | grep -v '^127\.' || true
   fi
 
-  # Append caller-supplied extras
-  for ip in "${EXTRA_IPS[@]}"; do
-    ips+=("$ip")
+  # Caller-supplied extras
+  for ip in $EXTRA_IPS; do
+    echo "$ip"
   done
-
-  # Deduplicate
-  printf '%s\n' "${ips[@]}" | sort -u
 }
 
 ###############################################################################
-# Build openssl.cnf with all discovered IPs as SANs
+# Build openssl.cnf — avoids process substitution with a tmp file
 ###############################################################################
 build_openssl_cnf() {
+  # Collect unique IPs into a temp file
+  local ip_file
+  ip_file="$(mktemp)"
+  collect_ips | sort -u > "$ip_file"
+
+  # Build [alt_names] section
   local alt_names=""
   local idx=1
   while IFS= read -r ip; do
-    alt_names+="IP.${idx} = ${ip}\n"
-    ((idx++))
-  done < <(collect_ips)
+    [[ -z "$ip" ]] && continue
+    alt_names="${alt_names}IP.${idx} = ${ip}
+"
+    idx=$((idx + 1))
+  done < "$ip_file"
+  rm -f "$ip_file"
 
-  cat > openssl.cnf <<EOF
+  cat > openssl.cnf << OPENSSLCNF
 [ req ]
 default_bits        = 4096
 default_md          = sha256
@@ -110,18 +106,18 @@ subjectAltName         = @alt_names
 authorityKeyIdentifier = keyid,issuer
 
 [ alt_names ]
-$(echo -e "$alt_names")
-EOF
+${alt_names}
+OPENSSLCNF
 }
 
 ###############################################################################
-# Generate CA key + self-signed certificate
+# Generate CA
 ###############################################################################
 generate_ca() {
-  echo "[certs] Generating CA key and certificate..."
-
+  echo "[certs] Generating CA key..."
   openssl genrsa -out ca.key 4096 2>/dev/null
 
+  echo "[certs] Generating CA certificate..."
   openssl req -new -x509 \
     -key ca.key \
     -out ca.crt \
@@ -130,17 +126,17 @@ generate_ca() {
     -extensions v3_ca \
     2>/dev/null
 
-  echo "[certs] CA certificate: $OUT_DIR/ca.crt"
+  echo "[certs] CA: $OUT_DIR/ca.crt"
 }
 
 ###############################################################################
-# Generate server key + CSR + sign with our CA
+# Generate server certificate signed by our CA
 ###############################################################################
 generate_server_cert() {
-  echo "[certs] Generating server key and certificate..."
-
+  echo "[certs] Generating server key..."
   openssl genrsa -out server.key 4096 2>/dev/null
 
+  echo "[certs] Generating CSR..."
   openssl req -new \
     -key server.key \
     -out server.csr \
@@ -148,6 +144,7 @@ generate_server_cert() {
     -subj "/C=RU/ST=Russia/L=Moscow/O=Anyrest/CN=anyrest-server" \
     2>/dev/null
 
+  echo "[certs] Signing server certificate with CA..."
   openssl x509 -req \
     -in server.csr \
     -CA ca.crt \
@@ -161,85 +158,72 @@ generate_server_cert() {
     2>/dev/null
 
   rm -f server.csr ca.srl
-
-  echo "[certs] Server certificate: $OUT_DIR/server.crt"
-  echo "[certs] Server key:         $OUT_DIR/server.key"
+  echo "[certs] Server cert: $OUT_DIR/server.crt"
 }
 
 ###############################################################################
 # Install CA into the system trust store
 ###############################################################################
 install_ca() {
-  echo "[certs] Installing CA certificate into system trust store..."
+  local ca="$OUT_DIR/ca.crt"
+  echo "[certs] Installing CA into system trust store..."
+
+  # Choose sudo or run as root
+  local S=""
+  [[ "$(id -u)" -ne 0 ]] && command -v sudo &>/dev/null && S="sudo"
 
   if [[ "$(uname -s)" == "Linux" ]]; then
-    # Detect distro
     if command -v update-ca-certificates &>/dev/null; then
-      # Debian / Ubuntu / Alpine
-      sudo cp ca.crt /usr/local/share/ca-certificates/anyrest-ca.crt
-      sudo update-ca-certificates
+      $S cp "$ca" /usr/local/share/ca-certificates/anyrest-ca.crt 2>/dev/null || \
+        { echo "[certs] WARNING: cannot write to trust store (need sudo?). CA NOT installed."; return; }
+      $S update-ca-certificates 2>/dev/null || true
     elif command -v update-ca-trust &>/dev/null; then
-      # RHEL / CentOS / Fedora
-      sudo cp ca.crt /etc/pki/ca-trust/source/anchors/anyrest-ca.crt
-      sudo update-ca-trust extract
+      $S cp "$ca" /etc/pki/ca-trust/source/anchors/anyrest-ca.crt 2>/dev/null || \
+        { echo "[certs] WARNING: cannot write to trust store (need sudo?). CA NOT installed."; return; }
+      $S update-ca-trust extract 2>/dev/null || true
     else
-      echo "[certs] WARNING: unknown distro, copy ca.crt manually to your trust store."
+      echo "[certs] WARNING: cannot detect CA update tool. Add $ca manually."
     fi
 
-    # NSS databases used by Chrome / Firefox on Linux
+    # NSS (Chrome / Firefox on Linux)
     if command -v certutil &>/dev/null; then
-      for nssdb in \
-        "$HOME/.pki/nssdb" \
-        "$HOME/.mozilla/firefox/"*"/cert9.db"; do
-        dir="$(dirname "$nssdb")"
-        if [[ -d "$dir" ]]; then
-          certutil -A -d "sql:$dir" -n "Anyrest Root CA" -t "CT,," -i ca.crt \
-            2>/dev/null && echo "[certs] Installed into NSS db: $dir"
-        fi
+      for d in "$HOME/.pki/nssdb" "$HOME/.mozilla/firefox/"*; do
+        [[ -d "$d" ]] && \
+          certutil -A -d "sql:$d" -n "Anyrest Root CA" -t "CT,," -i "$ca" \
+            2>/dev/null && echo "[certs] NSS installed: $d" || true
       done
-    else
-      echo "[certs] NOTE: install 'libnss3-tools' (certutil) for Chrome/Firefox support."
     fi
 
   elif [[ "$(uname -s)" == "Darwin" ]]; then
-    sudo security add-trusted-cert -d -r trustRoot \
-      -k /Library/Keychains/System.keychain ca.crt
-    echo "[certs] Installed into macOS System Keychain."
-
-  elif [[ "$(uname -s)" == MINGW* ]] || [[ "$(uname -s)" == CYGWIN* ]]; then
-    certutil.exe -addstore -f "ROOT" ca.crt
-    echo "[certs] Installed into Windows Certificate Store."
-
-  else
-    echo "[certs] Unsupported OS. Install ca.crt manually into your trust store."
+    $S security add-trusted-cert -d -r trustRoot \
+      -k /Library/Keychains/System.keychain "$ca" 2>/dev/null || true
+    echo "[certs] Installed into macOS Keychain."
   fi
 }
 
 ###############################################################################
-# Print a summary with fingerprint and SANs
+# Summary
 ###############################################################################
 print_summary() {
   echo ""
   echo "========================================="
-  echo " Anyrest Certificate Summary"
+  echo " Anyrest Certificates"
   echo "========================================="
-  echo "CA  fingerprint (SHA-256):"
-  openssl x509 -in ca.crt -fingerprint -sha256 -noout 2>/dev/null | sed 's/^/  /'
+  echo "CA fingerprint (SHA-256):"
+  openssl x509 -in ca.crt -fingerprint -sha256 -noout 2>/dev/null | sed 's/^/  /' || true
   echo ""
-  echo "Server certificate SANs:"
+  echo "Server SANs:"
   openssl x509 -in server.crt -text -noout 2>/dev/null \
-    | grep -A 20 "Subject Alternative Name" | head -5 | sed 's/^/  /'
+    | grep -A5 "Subject Alternative Name" | head -6 | sed 's/^/  /' || true
   echo ""
-  echo "Validity: $VALIDITY_DAYS days"
-  echo "Output:   $OUT_DIR"
+  echo "Validity : $VALIDITY_DAYS days"
+  echo "Output   : $OUT_DIR"
   echo "========================================="
 }
 
 ###############################################################################
-# Main
-###############################################################################
 main() {
-  echo "[certs] Anyrest certificate generator starting..."
+  echo "[certs] Starting..."
   build_openssl_cnf
   generate_ca
   generate_server_cert

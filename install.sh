@@ -116,10 +116,15 @@ install_docker() {
 # 3. Получение исходного кода
 # ─────────────────────────────────────────────────────────────────────────────
 fetch_repo() {
-  if [[ -f "$INSTALL_DIR/docker-compose.yml" ]]; then
+  if [[ -d "$INSTALL_DIR/.git" ]]; then
     info "Обновляю репозиторий в $INSTALL_DIR..."
-    git -C "$INSTALL_DIR" pull --ff-only --quiet 2>/dev/null || true
+    git -C "$INSTALL_DIR" fetch --quiet origin main 2>/dev/null || true
+    git -C "$INSTALL_DIR" reset --hard origin/main --quiet 2>/dev/null || true
     ok "Код обновлён."
+    return
+  fi
+  if [[ -f "$INSTALL_DIR/docker-compose.yml" ]]; then
+    ok "Код уже есть в $INSTALL_DIR (не git-репозиторий, не обновляю)."
     return
   fi
 
@@ -212,19 +217,18 @@ start_stack() {
   # Останавливаем старые контейнеры если есть
   docker compose down --remove-orphans 2>/dev/null || true
 
-  # Собираем и запускаем
-  docker compose up -d --build --quiet-pull 2>&1 \
-    | grep -vE '^#[0-9]|CACHED|=>|---' || true
+  # Собираем и запускаем (вывод в реальном времени)
+  docker compose up -d --build 2>&1
 
-  # Ждём пока web-контейнер поднимется (до 30 сек)
+  # Ждём пока web-контейнер поднимется (до 60 сек)
   info "Ожидаю запуска сервисов..."
   local i=0
-  while [[ $i -lt 30 ]]; do
-    if curl -fsSk "https://$SERVER_IP/health" &>/dev/null; then
+  while [[ $i -lt 60 ]]; do
+    if wget -qO- --no-check-certificate "https://$SERVER_IP/health" &>/dev/null 2>&1; then
       break
     fi
     sleep 1
-    ((i++))
+    i=$((i + 1))
   done
 
   ok "Все сервисы запущены."

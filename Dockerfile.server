@@ -6,21 +6,22 @@ ARG CMD=signal
 
 WORKDIR /app
 
-# Cache dependencies
+# Cache dependency downloads separately from source
 COPY server/go.mod server/go.sum ./
 RUN go mod download
 
-# Build
 COPY server/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build \
       -ldflags="-s -w" \
       -o /app/anyrest-server \
       ./cmd/${CMD}
 
-# ─── Stage 2: Minimal runtime image ─────────────────────────────────────────
-FROM scratch
+# ─── Stage 2: Minimal Alpine runtime ─────────────────────────────────────────
+# Using alpine (not scratch) so that healthcheck shell commands work.
+FROM alpine:3.21
 
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+RUN apk add --no-cache ca-certificates wget
+
 COPY --from=builder /app/anyrest-server /anyrest-server
 
 ENTRYPOINT ["/anyrest-server"]

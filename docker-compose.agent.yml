@@ -1,13 +1,11 @@
 ##############################################################################
-# Anyrest Agent — Docker Compose override
+# Anyrest Agent — запуск на управляемом ПК
 #
-# Run on each host machine you want to control remotely.
-# Requires:
-#   - A running display server (X11 on :0)
-#   - ANYREST_SIGNAL_URL pointing to the server
+# Использование:
+#   ANYREST_SIGNAL_URL=wss://SERVER_IP/ws docker compose -f docker-compose.agent.yml up -d
 #
-# Usage:
-#   ANYREST_SIGNAL_URL=wss://your-server-ip/ws docker compose -f docker-compose.agent.yml up -d
+# Или через install.sh:
+#   bash install.sh --agent --ip SERVER_IP
 ##############################################################################
 
 services:
@@ -17,10 +15,14 @@ services:
       dockerfile: Dockerfile.agent
     image: anyrest-agent:latest
     restart: unless-stopped
-    network_mode: host        # needed for WebRTC P2P ICE candidates
+    # host network нужен чтобы WebRTC ICE кандидаты видели реальные IP интерфейсов
+    network_mode: host
     environment:
       DISPLAY: "${DISPLAY:-:0}"
     volumes:
+      # CA-сертификат монтируется чтобы агент доверял WSS-серверу
+      - /opt/anyrest/certs:/opt/anyrest/certs:ro
+      # X11 сокет для захвата экрана и инъекции ввода
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
     command:
       - "-signal=${ANYREST_SIGNAL_URL:-wss://localhost/ws}"

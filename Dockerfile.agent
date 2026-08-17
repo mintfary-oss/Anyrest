@@ -1,7 +1,9 @@
 # ─── Stage 1: Build the Go agent binary ──────────────────────────────────────
 FROM golang:1.26-alpine AS builder
 
-RUN apk add --no-cache gcc musl-dev libx11-dev xorgproto
+# kbinani/screenshot uses gen2brain/shm which needs CGO (sys/shm.h).
+# musl-dev provides all required C headers on Alpine.
+RUN apk add --no-cache gcc musl-dev
 
 WORKDIR /app
 
@@ -14,19 +16,22 @@ RUN CGO_ENABLED=1 GOOS=linux go build \
       -o /app/anyrest-agent \
       ./cmd/
 
-# ─── Stage 2: Runtime image with X11 + xdotool ───────────────────────────────
+# ─── Stage 2: Runtime image with X11 tools ───────────────────────────────────
 FROM alpine:3.21
 
+# xdotool — keyboard/mouse injection via X11 XTEST
+# ca-certificates — for TLS connections
+# update-ca-certificates — so entrypoint can install our CA
 RUN apk add --no-cache \
       xdotool \
-      libx11 \
       ca-certificates
 
 COPY --from=builder /app/anyrest-agent /usr/local/bin/anyrest-agent
+COPY agent-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-# The agent needs access to the host display.
-# Mount the X11 socket and set DISPLAY:
-#   docker run -e DISPLAY=:0 -v /tmp/.X11-unix:/tmp/.X11-unix anyrest-agent
+# Mount /opt/anyrest/certs at runtime so the CA is auto-installed.
+# Mount /tmp/.X11-unix for screen capture and input injection.
 ENV DISPLAY=:0
 
-ENTRYPOINT ["anyrest-agent"]
+ENTRYPOINT ["/entrypoint.sh"]
