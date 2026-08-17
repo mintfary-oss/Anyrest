@@ -1,27 +1,29 @@
-# ─── Stage 1: Build the Go server binary ─────────────────────────────────────
-FROM golang:1.26-alpine AS builder
+# Anyrest Signal / Relay Server
+#
+# Pre-built binaries are committed to bin/linux-{amd64,arm64}/.
+# No Go compiler, no network calls — build time: ~5 seconds.
+#
+# To rebuild the binaries after source changes (run locally, then commit):
+#   cd server
+#   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" \
+#       -o ../bin/linux-amd64/anyrest-signal ./cmd/signal/
+#   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" \
+#       -o ../bin/linux-amd64/anyrest-relay ./cmd/relay/
+#   (repeat with GOARCH=arm64 for ARM servers, then commit bin/)
 
-# CMD selects which server binary to build: signal | relay
+FROM alpine:3.21
+
+# CMD selects which binary to run: signal | relay  (set via docker-compose args).
 ARG CMD=signal
 
-WORKDIR /app
-
-# Cache dependency downloads separately from source
-COPY server/go.mod server/go.sum ./
-RUN go mod download
-
-COPY server/ ./
-RUN CGO_ENABLED=0 GOOS=linux go build \
-      -ldflags="-s -w" \
-      -o /app/anyrest-server \
-      ./cmd/${CMD}
-
-# ─── Stage 2: Minimal Alpine runtime ─────────────────────────────────────────
-# Using alpine (not scratch) so that healthcheck shell commands work.
-FROM alpine:3.21
+# TARGETARCH is injected by Docker for the target platform (amd64 | arm64 | …).
+# Defaults to amd64 so plain `docker build` works without --platform.
+ARG TARGETARCH=amd64
 
 RUN apk add --no-cache ca-certificates wget
 
-COPY --from=builder /app/anyrest-server /anyrest-server
+# Copy the pre-built binary for the correct architecture.
+COPY bin/linux-${TARGETARCH}/anyrest-${CMD} /anyrest-server
+RUN chmod +x /anyrest-server
 
 ENTRYPOINT ["/anyrest-server"]

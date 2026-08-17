@@ -13,6 +13,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.agent
+      args:
+        TARGETARCH: "${TARGETARCH:-amd64}"
     image: anyrest-agent:latest
     restart: unless-stopped
     # host network нужен чтобы WebRTC ICE кандидаты видели реальные IP интерфейсов

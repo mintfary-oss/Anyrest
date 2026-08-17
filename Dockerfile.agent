@@ -1,37 +1,30 @@
-# ─── Stage 1: Build the Go agent binary ──────────────────────────────────────
-FROM golang:1.26-alpine AS builder
+# Anyrest Desktop Agent
+#
+# Pre-built binary is committed to bin/linux-{amd64,arm64}/.
+# No Go compiler, no CGO, no network calls — build time: ~10 seconds.
+#
+# To rebuild the binary after source changes (run locally, then commit):
+#   cd agent
+#   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" \
+#       -o ../bin/linux-amd64/anyrest-agent ./cmd/
+#   (repeat with GOARCH=arm64 for ARM servers, then commit bin/)
 
-# kbinani/screenshot uses gen2brain/shm which needs CGO (sys/shm.h).
-# musl-dev provides all required C headers on Alpine.
-RUN apk add --no-cache gcc musl-dev
-
-WORKDIR /app
-
-COPY agent/go.mod agent/go.sum ./
-RUN go mod download
-
-COPY agent/ ./
-RUN CGO_ENABLED=1 GOOS=linux go build \
-      -ldflags="-s -w" \
-      -o /app/anyrest-agent \
-      ./cmd/
-
-# ─── Stage 2: Runtime image with X11 tools ───────────────────────────────────
 FROM alpine:3.21
 
-# xdotool — keyboard/mouse injection via X11 XTEST
-# ca-certificates — for TLS connections
-# update-ca-certificates — so entrypoint can install our CA
-RUN apk add --no-cache \
-      xdotool \
-      ca-certificates
+# TARGETARCH is injected by Docker for the target platform (amd64 | arm64 | …).
+ARG TARGETARCH=amd64
 
-COPY --from=builder /app/anyrest-agent /usr/local/bin/anyrest-agent
+# xdotool — keyboard/mouse injection via the X11 XTEST extension.
+# ca-certificates — for outbound TLS/WSS connections.
+RUN apk add --no-cache xdotool ca-certificates
+
+# Copy the pre-built agent binary for the correct architecture.
+COPY bin/linux-${TARGETARCH}/anyrest-agent /usr/local/bin/anyrest-agent
 COPY agent-entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /usr/local/bin/anyrest-agent /entrypoint.sh
 
-# Mount /opt/anyrest/certs at runtime so the CA is auto-installed.
-# Mount /tmp/.X11-unix for screen capture and input injection.
+# Mount /opt/anyrest/certs at runtime so our CA is trusted.
+# Mount /tmp/.X11-unix for screen capture and xdotool input injection.
 ENV DISPLAY=:0
 
 ENTRYPOINT ["/entrypoint.sh"]

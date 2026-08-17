@@ -1,4 +1,4 @@
-# Binaries
+# Binaries (intermediate build dirs only; /bin/ at repo root is committed)
 /server/bin/
 /agent/bin/
 *.exe

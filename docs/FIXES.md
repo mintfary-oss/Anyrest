@@ -92,6 +92,20 @@
 
 ---
 
+## #13 — Docker Hub 429 Too Many Requests (alpine:3.21)
+
+**Ошибка:**
+```
+alpine:3.21: unexpected status from HEAD request to
+https://registry-1.docker.io/v2/library/alpine/manifests/3.21: 429 Too Many Requests
+```
+**Причина:** IP сервера превысил лимит анонимных pull-запросов к Docker Hub (100/6h).  
+**Исправление в `install.sh`:**
+1. `configure_mirror()` — `/etc/docker/daemon.json` с зеркалами
+2. `pull_base_images()` — предварительный pull с 5 попытками и нарастающим backoff
+
+---
+
 ## #14 — `--pull=never` не поддерживается старым Docker Compose
 
 **Ошибка:** `invalid argument "never" for "--pull" flag: strconv.ParseBool: parsing "never": invalid syntax`  
@@ -106,21 +120,51 @@
 **Исправление:** Зеркала в `/etc/docker/daemon.json` заменены на РФ-доступные:
 - `https://huecker.io` — публичное зеркало, работает в России
 - `https://dockerhub.timeweb.cloud` — зеркало Timeweb (российский хостер)
-- `https://mirror.gcr.io` — оставлено как резервное
-
-Добавлен DNS: `77.88.8.8` (Yandex), `1.1.1.1` (Cloudflare), `8.8.8.8` (Google).
 
 ---
 
-## #13 — Docker Hub 429 Too Many Requests (alpine:3.21)
+## #16 — Go компиляция в Docker: 45+ минут
 
-**Ошибка:**
-```
-alpine:3.21: unexpected status from HEAD request to
-https://registry-1.docker.io/v2/library/alpine/manifests/3.21: 429 Too Many Requests
-```
-**Причина:** IP сервера превысил лимит анонимных pull-запросов к Docker Hub (100/6h).  
-**Исправление в `install.sh`:**
-1. `configure_mirror()` — `/etc/docker/daemon.json` с `mirror.gcr.io` + `dockerhub.azk8s.cn`
-2. `pull_base_images()` — предварительный pull с 5 попытками и нарастающим backoff
-3. `docker compose build --pull=never` — без обращений к registry во время сборки
+**Ошибка:** `docker compose build` зависал на 45+ минут — Go компилятор скачивал и
+собирал pion/webrtc (~25 пакетов, >300 MB зависимостей) внутри Docker на каждом чистом деплое.
+
+**Причина:** Докерфайлы использовали `FROM golang:1.26-alpine AS builder` и компилировали
+Go-код прямо в контейнере. Образ golang весит ~300 MB. При ограниченном интернете и
+медленном CPU сборка занимала 45+ минут.
+
+**Исправление (радикальное):**
+
+1. **Pre-built бинарники в репозитории** — добавлена папка `bin/`:
+   - `bin/linux-amd64/anyrest-signal` (6.5 MB)
+   - `bin/linux-amd64/anyrest-relay` (2.6 MB)
+   - `bin/linux-amd64/anyrest-agent` (11 MB)
+   - `bin/linux-arm64/anyrest-signal` (6.0 MB)
+   - `bin/linux-arm64/anyrest-relay` (2.4 MB)
+   - `bin/linux-arm64/anyrest-agent` (10 MB)
+
+2. **Dockerfile.server переписан** — `FROM alpine:3.21` + `COPY bin/linux-${TARGETARCH}/anyrest-${CMD}`:
+   - Нет стадии сборки, нет golang-образа, нет интернет-запросов
+   - Время сборки: 45+ мин → **~5 секунд**
+
+3. **Dockerfile.agent переписан** — аналогично, только `COPY + xdotool`
+
+4. **install.sh обновлён:**
+   - `detect_arch()` — автоматически определяет amd64 / arm64
+   - `pull_base_images()` — только `alpine:3.21` (~8 MB) + `nginx:1.27-alpine` (~40 MB)
+   - `golang:1.26-alpine` (~300 MB) больше не скачивается
+   - `TARGETARCH=$ARCH docker compose build` — передаётся архитектура
+
+5. **docker-compose.yml обновлён** — `TARGETARCH: "${TARGETARCH:-amd64}"` в `args`
+
+**Итог:** Общее время установки: 45+ мин → **~2–3 минуты** на любом VPS.
+
+---
+
+## #17 — CGO_ENABLED в agent — кросс-компиляция
+
+**Проблема:** `kbinani/screenshot` импортирует `gen2brain/shm` с CGO.
+Кросс-компиляция с CGO требует целевой C-тулчейн.
+
+**Решение:** `CGO_ENABLED=0 GOOS=linux GOARCH=amd64` — Go использует чистый X11 backend
+(jezek/xgb), gen2brain/shm имеет pure-Go fallback. Бинарник статически слинкован,
+не зависит от libc, запускается в `FROM scratch` или alpine без доп. библиотек.

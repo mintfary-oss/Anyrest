@@ -3,6 +3,9 @@
 #
 # Запуск:
 #   cd /opt/anyrest && docker compose up -d --build
+#
+# Архитектура (по умолчанию amd64):
+#   TARGETARCH=arm64 docker compose up -d --build
 ##############################################################################
 
 services:
@@ -14,6 +17,9 @@ services:
       dockerfile: Dockerfile.server
       args:
         CMD: signal
+        # TARGETARCH берётся из переменной окружения (amd64 | arm64).
+        # install.sh устанавливает её автоматически; по умолчанию amd64.
+        TARGETARCH: "${TARGETARCH:-amd64}"
     image: anyrest-signal:latest
     restart: unless-stopped
     environment:
@@ -31,7 +37,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 15s
 
   # ── Relay server ──────────────────────────────────────────────────────────
   relay:
@@ -40,6 +46,7 @@ services:
       dockerfile: Dockerfile.server
       args:
         CMD: relay
+        TARGETARCH: "${TARGETARCH:-amd64}"
     image: anyrest-relay:latest
     restart: unless-stopped
     environment:
@@ -51,12 +58,12 @@ services:
     networks:
       - anyrest-internal
     healthcheck:
-      # nc из busybox проверяет что TCP-порт открыт
+      # nc -z проверяет что TCP-порт открыт (busybox nc в alpine 3.21+)
       test: ["CMD-SHELL", "nc -z localhost 8081 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 15s
 
   # ── Web (NGINX + React) ───────────────────────────────────────────────────
   web:
