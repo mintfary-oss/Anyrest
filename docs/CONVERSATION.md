@@ -163,13 +163,67 @@ strconv.ParseBool: parsing "never": invalid syntax
 
 ---
 
+---
+
+## Сессия 11 — Устранение 45+ минут компиляции Go в Docker
+
+**Запрос:** «Долго устанавливается — 45 минут прошло и зависло на шаге 4 из 6. Запусти у себя, проверь весь код и исправь»
+
+**Диагностика:**
+- Dockerfiles использовали `FROM golang:1.26-alpine AS builder` — компилировали весь Go-код внутри Docker
+- Загрузка образа golang: ~300 MB + компиляция pion/webrtc (~25 пакетов) — 45+ минут на медленном VPS
+- При каждой чистой установке всё повторялось с нуля
+
+**Исправление (радикальное — pre-built binaries):**
+
+1. **Все Go-бинарники скомпилированы локально** (`CGO_ENABLED=0`) и добавлены в репозиторий:
+   ```
+   bin/linux-amd64/anyrest-signal  (6.5 MB)
+   bin/linux-amd64/anyrest-relay   (2.6 MB)
+   bin/linux-amd64/anyrest-agent   (11 MB)
+   bin/linux-arm64/anyrest-signal  (6.0 MB)
+   bin/linux-arm64/anyrest-relay   (2.4 MB)
+   bin/linux-arm64/anyrest-agent   (10 MB)
+   ```
+
+2. **Dockerfile.server переписан** — вместо `golang:1.26-alpine` builder:
+   ```dockerfile
+   FROM alpine:3.21
+   ARG TARGETARCH=amd64
+   ARG CMD=signal
+   COPY bin/linux-${TARGETARCH}/anyrest-${CMD} /anyrest-server
+   ```
+
+3. **Dockerfile.agent переписан** аналогично — только `COPY + xdotool`.
+
+4. **install.sh v2** — добавлены `detect_arch()` (amd64/arm64), убрана загрузка `golang:1.26-alpine`,
+   `pull_base_images()` теперь скачивает только `alpine` (~8 MB) + `nginx` (~40 MB).
+
+5. **docker-compose.yml** — добавлен `TARGETARCH: "${TARGETARCH:-amd64}"` в build args всех Go-сервисов.
+
+**Результат:**
+| Метрика | До | После |
+|---------|-----|-------|
+| Образы для загрузки | golang (300 MB) + alpine + nginx | alpine + nginx только (~48 MB) |
+| Шаг сборки | Компиляция Go (45+ мин) | COPY бинарников (~5–10 сек) |
+| Общее время установки | 45+ минут | **~2–3 минуты** |
+
+**Проверка всего кода:**
+- Go server: `go build ./...` amd64 + arm64 → ✅ 0 ошибок
+- Go agent: `go build ./...` amd64 + arm64 → ✅ 0 ошибок
+- TypeScript: `tsc -b && vite build` → ✅ 0 ошибок, 218 KB
+- install.sh / gen-certs.sh / entrypoint.sh: `bash -n` → ✅ синтаксис OK
+- docker-compose.yml / agent.yml: YAML parse → ✅ OK
+
+---
+
 ## Текущее состояние
 
 **URL:** https://github.com/mintfary-oss/Anyrest  
 **Ветка:** `main`  
-**Коммиты:** 10 сессий, 13 исправленных ошибок
+**Сессий:** 11 | **Исправлений:** 17
 
-### Запуск (одна команда):
+### Запуск (одна команда, ~2–3 мин):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mintfary-oss/Anyrest/main/install.sh | bash
 ```
@@ -177,7 +231,19 @@ curl -fsSL https://raw.githubusercontent.com/mintfary-oss/Anyrest/main/install.s
 ### Удаление и переустановка:
 ```bash
 cd /opt/anyrest && docker compose down --volumes --remove-orphans 2>/dev/null || true
-docker rmi anyrest-signal:latest anyrest-relay:latest anyrest-web:latest 2>/dev/null || true
+docker rmi anyrest-signal:latest anyrest-relay:latest anyrest-web:latest anyrest-agent:latest 2>/dev/null || true
 docker builder prune -af && rm -rf /opt/anyrest
 curl -fsSL https://raw.githubusercontent.com/mintfary-oss/Anyrest/main/install.sh | bash
+```
+
+### Пересборка бинарников после изменений Go-кода:
+```bash
+# Сервер:
+cd server
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../bin/linux-amd64/anyrest-signal ./cmd/signal/
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../bin/linux-amd64/anyrest-relay  ./cmd/relay/
+# Агент:
+cd ../agent
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../bin/linux-amd64/anyrest-agent  ./cmd/
+# Затем commit + push, и на сервере: git pull && docker compose up -d --build
 ```

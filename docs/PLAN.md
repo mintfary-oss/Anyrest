@@ -115,6 +115,21 @@ git push
 cd /opt/anyrest && git pull && docker compose up -d --build
 ```
 
+### Пересборка Go-бинарников (после изменения Go-кода)
+```bash
+# Сервер (amd64 + arm64):
+cd server
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../bin/linux-amd64/anyrest-signal ./cmd/signal/
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../bin/linux-amd64/anyrest-relay  ./cmd/relay/
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o ../bin/linux-arm64/anyrest-signal ./cmd/signal/
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o ../bin/linux-arm64/anyrest-relay  ./cmd/relay/
+# Агент:
+cd ../agent
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../bin/linux-amd64/anyrest-agent ./cmd/
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o ../bin/linux-arm64/anyrest-agent ./cmd/
+git add ../bin/ && git commit -m "build: update Go binaries" && git push
+```
+
 ---
 
 ## Структура файлов
@@ -148,9 +163,16 @@ anyrest/
 │       └── assets/{*.js,*.css}
 ├── certs/gen-certs.sh
 ├── nginx/nginx.conf
-├── Dockerfile.server               # Go builder → Alpine
+├── bin/                            # ← Pre-built Go binaries (committed to repo)
+│   ├── linux-amd64/anyrest-signal  # 6.5 MB — x86_64
+│   ├── linux-amd64/anyrest-relay   # 2.6 MB — x86_64
+│   ├── linux-amd64/anyrest-agent   # 11 MB  — x86_64
+│   ├── linux-arm64/anyrest-signal  # 6.0 MB — ARM64
+│   ├── linux-arm64/anyrest-relay   # 2.4 MB — ARM64
+│   └── linux-arm64/anyrest-agent   # 10 MB  — ARM64
+├── Dockerfile.server               # COPY-only → Alpine (no Go compiler!)
 ├── Dockerfile.web                  # NGINX-only (no npm!)
-├── Dockerfile.agent                # Go builder → Alpine + xdotool
+├── Dockerfile.agent                # COPY-only → Alpine + xdotool (no Go compiler!)
 ├── docker-compose.yml
 ├── docker-compose.agent.yml
 ├── agent-entrypoint.sh
