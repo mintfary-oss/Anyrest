@@ -16,7 +16,7 @@
 
 ---
 
-## Ход диалога
+## Сессия 1 — Начальная реализация (MVP)
 
 ### Шаг 1: Инициализация
 - Агент клонировал пустой репозиторий `mintfary-oss/Anyrest`
@@ -43,3 +43,112 @@
 - Агент зафиксировал изменения в ветке `neo/initial-anyrest-impl-k9a7f`
 - PR не создан (репозиторий был пустым — нет базовой ветки `main`)
 - По запросу пользователя созданы документационные файлы
+
+---
+
+## Сессия 2 — Руководство пользователя в веб-интерфейсе
+
+**Запрос:** «Как пользоваться? Подробное описание должно быть в Web версии»
+
+**Что сделано:**
+- Добавлена страница-overlay с кнопкой `?` в шапке приложения
+- Компонент `HelpOverlay.tsx` — полноценное руководство из 7 разделов:
+  - Быстрый старт (3 шага + команда установки)
+  - Установка агента (Docker / скрипт / таблица флагов CLI)
+  - Подключение (пошаговая инструкция)
+  - Управление (горячие клавиши и мышь)
+  - Сертификаты (инструкция для Chrome, Firefox, Linux, Windows, macOS)
+  - Безопасность (таблица уровней шифрования)
+  - Устранение проблем (6 частых проблем с решениями)
+- Все команды автоматически подставляют реальный IP/хост из `window.location`
+
+---
+
+## Сессия 3 — Полное автоматическое развёртывание
+
+**Запрос:** «Все эти пункты должны делаться автоматически при установке, нажимаем на адрес сервера — всё заработало»
+
+**Что сделано:**
+- Полностью переписан `install.sh` — одна команда делает всё:
+  1. Определяет публичный IP автоматически
+  2. Устанавливает Docker если не установлен
+  3. Клонирует / обновляет репозиторий
+  4. Генерирует TLS-сертификаты с IP-SAN
+  5. Устанавливает CA в системное хранилище
+  6. Создаёт `.env` со случайным RELAY_SECRET
+  7. Собирает и запускает Docker Compose
+  8. Выводит ссылку — просто открываете в браузере
+- Исправлен NGINX для раздачи `ca.crt` по пути `/certs/ca.crt`
+
+---
+
+## Сессия 4 — Диагностика и исправление ошибок сборки
+
+**Запрос пользователя:** Запустил `docker compose up --build` на сервере 217.198.12.184 — сборка падала на нескольких этапах.
+
+### Найденные и исправленные ошибки:
+
+| # | Файл | Баг | Последствие |
+|---|------|-----|-------------|
+| 1 | `Dockerfile.server` | `FROM scratch` — нет shell | healthcheck падал |
+| 2 | `docker-compose.yml` | healthcheck `/anyrest-server -help` → exit 1 | web-контейнер не стартовал |
+| 3 | `Dockerfile.agent` | лишние пакеты libx11-dev, xorgproto | сборка агента падала |
+| 4 | `Dockerfile.web` | `npm ci --prefer-offline` без кэша | сборка зависала |
+| 5 | `vite.config.ts` | `JSON.stringify('')` обходит `??` | WebSocket к "" |
+| 6 | `nginx.conf` | ssl_ciphers на двух строках | NGINX не стартовал |
+| 7 | `gen-certs.sh` | `< <(...)` требует `/dev/fd/` | сертификаты не создавались |
+| 8 | `install.sh` | `git pull --ff-only` + curl | падал при повторной установке |
+
+---
+
+## Сессия 5 — Исправление критической ошибки npm в Docker
+
+**Ошибка на сервере:**
+```
+[web web-builder 4/6] RUN npm ci: 105.3
+npm error Exit handler never called!
+npm error This is an error with npm itself.
+```
+
+**Диагностика:**
+- `node:22-alpine` поставляется с **npm 10**
+- `package-lock.json` в репозитории был сгенерирован **npm 11** (lockfileVersion 3)
+- npm 10 не может надёжно обработать lockfile v3 → крash через ~105 сек
+
+**Дополнительно найдено:**
+- `web/tsconfig.app.json` содержал `"erasableSyntaxOnly": true`
+- TypeScript 6 с этим флагом запрещает parameter properties (`constructor(private readonly x: T)`)
+- Несколько конструкторов в `signaling.ts` и `webrtc.ts` используют этот синтаксис → сборка падала с TS1294
+
+**Исправления:**
+1. `Dockerfile.web`: `node:22-alpine` → `node:24-alpine` (npm 11 = совместимо с lockfile v3)
+2. `web/tsconfig.app.json`: удалена строка `"erasableSyntaxOnly": true`
+
+**Проверка локально:**
+- `npm run build` — чистый бандл 217 KB, 0 ошибок TypeScript
+- `go build -o /tmp/anyrest-server ./cmd/signal/` — OK
+- `go build -o /tmp/anyrest-relay ./cmd/relay/` — OK
+- `go build -o /tmp/anyrest-agent ./cmd/` — OK
+
+**Изменения запушены в `main`** коммит `2712fdb`.
+
+---
+
+## Текущее состояние репозитория
+
+**URL:** https://github.com/mintfary-oss/Anyrest  
+**Ветка:** `main`  
+**Сервер:** `217.198.12.184`
+
+### Запуск после обновления:
+```bash
+cd /opt/anyrest
+git fetch origin main && git reset --hard origin/main
+docker compose down --remove-orphans
+docker compose up -d --build
+```
+
+### Или с нуля (первая установка):
+```bash
+curl -fsSL https://raw.githubusercontent.com/mintfary-oss/Anyrest/main/install.sh | bash
+```

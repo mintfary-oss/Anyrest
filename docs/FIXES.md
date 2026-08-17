@@ -1,5 +1,7 @@
 # Ошибки и исправления в процессе разработки
 
+---
+
 ## Ошибка #1: `input.NewStubInjector` не определён на Linux
 
 **Когда:** Сборка агента (`go build -o /dev/null ./...`)
@@ -136,3 +138,119 @@ https: (() => {
 ```
 
 Сервер поднимается на HTTP если сертификатов нет (удобно для разработки).
+
+---
+
+## Ошибка #7: `Dockerfile.server` — FROM scratch без shell
+
+**Когда:** Первый `docker compose up --build` на реальном сервере
+
+**Ошибка:**
+```
+web container depends_on signal (healthy) — never became healthy
+```
+
+**Причина:**  
+`FROM scratch` не содержит shell (`/bin/sh`), поэтому `CMD-SHELL` в healthcheck не работает. Docker считает контейнер нездоровым, и web-контейнер не стартует.
+
+**Исправление:**  
+Заменено на `FROM alpine:3.21` с установкой `wget` и `ca-certificates`.  
+Healthcheck переписан на `wget -qO- http://localhost:8080/health`.
+
+---
+
+## Ошибка #8: `nginx.conf` — ssl_ciphers на нескольких строках
+
+**Когда:** Старт NGINX-контейнера
+
+**Ошибка:**
+```
+nginx: [emerg] invalid parameter "ECDHE-RSA-AES128-GCM-SHA256:..." 
+in /etc/nginx/nginx.conf:44
+```
+
+**Причина:**  
+Директива `ssl_ciphers` была разбита на несколько строк — NGINX не поддерживает продолжение строки с `\`.
+
+**Исправление:**  
+Весь список шифров помещён в одну строку.
+
+---
+
+## Ошибка #9: `gen-certs.sh` — process substitution `< <(...)`
+
+**Когда:** Генерация сертификатов в Docker Alpine
+
+**Ошибка:**
+```
+bash: /dev/fd/63: No such file or directory
+```
+
+**Причина:**  
+`< <(...)` (process substitution) требует `/dev/fd/` — в минимальных Alpine-контейнерах этого нет.
+
+**Исправление:**  
+Использование временного файла через `mktemp`:
+```bash
+local ip_file
+ip_file="$(mktemp)"
+collect_ips | sort -u > "$ip_file"
+while IFS= read -r ip; do
+    ...
+done < "$ip_file"
+rm -f "$ip_file"
+```
+
+---
+
+## Ошибка #10: `npm ci` — "Exit handler never called!" в Docker
+
+**Когда:** `docker compose up --build` — стадия `[web web-builder 4/6] RUN npm ci`
+
+**Ошибка:**
+```
+npm error Exit handler never called!
+npm error This is an error with npm itself. Please report this error at:
+npm error    https://github.com/npm/cli/issues
+```
+
+**Причина:**  
+- `node:22-alpine` поставляется с **npm 10**
+- `package-lock.json` в репозитории создан **npm 11** (lockfileVersion: 3)
+- npm 10 не может полностью обработать lockfile v3 → зависает/крашится через ~105 сек
+
+**Исправление:**  
+В `Dockerfile.web` изменена базовая образ:
+```dockerfile
+# Было:
+FROM node:22-alpine AS web-builder
+# Стало:
+FROM node:24-alpine AS web-builder
+```
+Node 24 поставляется с npm 11 — той же версией, что создала lockfile. `npm ci` работает без ошибок.
+
+---
+
+## Ошибка #11: TypeScript TS1294 — `erasableSyntaxOnly` запрещает parameter properties
+
+**Когда:** `npm run build` в стадии Docker (после исправления ошибки #10)
+
+**Ошибка:**
+```
+src/lib/signaling.ts(24,15): error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled.
+src/lib/webrtc.ts(38,5): error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled.
+src/lib/webrtc.ts(39,5): error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled.
+src/lib/webrtc.ts(40,5): error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled.
+```
+
+**Причина:**  
+`tsconfig.app.json` содержал `"erasableSyntaxOnly": true`. Этот флаг (TypeScript 5.5+) запрещает синтаксис, который не может быть просто «стёрт» при компиляции — в том числе **parameter properties** в конструкторах:
+```typescript
+// Запрещено при erasableSyntaxOnly: true
+constructor(private readonly serverUrl: string) { ... }
+```
+Флаг предназначен для сред, где TypeScript запускается напрямую (Node.js native strips). Для Vite/esbuild он не нужен — esbuild сам транспилирует TypeScript.
+
+**Исправление:**  
+Удалена строка `"erasableSyntaxOnly": true` из `web/tsconfig.app.json`.  
+Проверено: `npm run build` выдаёт чистый бандл 217 KB, 0 ошибок TypeScript.

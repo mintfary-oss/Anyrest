@@ -15,7 +15,6 @@
 - Автоматический fallback на relay-сервер при недоступности P2P
 - Endpoint `/health` для мониторинга
 - Конфигурация через флаги командной строки
-- Поддержка TLS (сертификат + ключ через `-cert` и `-key`)
 
 ---
 
@@ -91,6 +90,18 @@
 - Бейдж состояния подключения: idle/connecting/connected/failed
 - Кнопка Disconnect в режиме активной сессии
 
+### `components/HelpOverlay.tsx`
+- Кнопка `?` в правом верхнем углу шапки
+- Overlay с полным руководством пользователя (7 разделов):
+  - Быстрый старт
+  - Установка агента (Docker, скрипт, флаги CLI)
+  - Подключение (пошаговая инструкция)
+  - Управление (горячие клавиши и мышь)
+  - Сертификаты (Chrome, Firefox, Linux, Windows, macOS)
+  - Безопасность (таблица слоёв шифрования)
+  - Устранение проблем (6 частых проблем)
+- Все адреса/команды подставляются из `window.location` автоматически
+
 ### Стили (`index.css`)
 - Тёмная тема (цвета vars), отзывчивый layout
 - Sidebar (280px) + fullscreen canvas
@@ -129,17 +140,17 @@
 
 ### `nginx/nginx.conf`
 - HTTP → HTTPS редирект
-- TLS 1.2/1.3 с современными шифрами
+- TLS 1.2/1.3 с современными шифрами (одна строка — проверено)
 - HSTS, X-Content-Type-Options, X-Frame-Options
 - WebSocket proxy `/ws` → signaling server с таймаутами 3600s
+- Раздача `ca.crt` по `/certs/ca.crt` для установки в браузер
 - Статические файлы с агрессивным кэшированием (1 год для fingerprinted assets)
 
 ### `docker-compose.yml`
-- Сервис `signal` — сервер сигнализации (internal)
-- Сервис `relay` — сервер ретрансляции (порт 8081)
+- Сервис `signal` — сервер сигнализации (internal), healthcheck через wget
+- Сервис `relay` — сервер ретрансляции (порт 8081), healthcheck через nc
 - Сервис `web` — NGINX + React (порты 80, 443)
 - Внутренняя сеть `anyrest-internal`
-- Health checks для всех сервисов
 - `restart: unless-stopped`
 
 ### `docker-compose.agent.yml`
@@ -148,23 +159,23 @@
 - Переменная `DISPLAY` для захвата экрана
 
 ### Dockerfiles
-- `Dockerfile.server` — multi-stage: Go builder → scratch (минимальный образ)
-- `Dockerfile.web` — multi-stage: Node builder → NGINX alpine
-- `Dockerfile.agent` — Alpine с xdotool и libx11
+- `Dockerfile.server` — multi-stage: Go builder → Alpine (wget для healthcheck)
+- `Dockerfile.web` — multi-stage: **Node 24** builder → NGINX alpine
+- `Dockerfile.agent` — Alpine с xdotool
 
 ---
 
 ## 8. Авто-установщик (`install.sh`)
 
-- Определение ОС: Ubuntu/Debian, RHEL/CentOS, Alpine, macOS
-- Автоматическая установка Docker (через get.docker.com или пакетный менеджер)
-- Клонирование/обновление репозитория
-- Генерация сертификатов и установка CA
+- Определение публичного IP (4 fallback-сервиса + ip addr)
+- Автоматическая установка Docker (через get.docker.com)
+- Клонирование / обновление репозитория
+- Генерация сертификатов и установка CA в системное хранилище
 - Запись `.env` с автогенерированным RELAY_SECRET
 - Сборка и запуск Docker Compose
+- Ожидание готовности (health-poll до 60 сек)
 - Установка systemd-сервиса для агента (Linux)
-- Режимы: `--server-only`, `--agent-only`, `--full`
-- Команда `--uninstall` для удаления
+- Режимы: сервер (по умолчанию), `--agent` для управляемого ПК
 - Цветной вывод, информативные сообщения
 
 ---
@@ -182,3 +193,5 @@
 | Linux агент | ✅ X11 + xdotool |
 | WebRTC P2P | ✅ pion/webrtc v4 |
 | Relay fallback | ✅ TCP + HMAC |
+| Руководство в веб-интерфейсе | ✅ HelpOverlay (кнопка ?) |
+| Docker сборка без ошибок | ✅ исправлено (node:24, no erasableSyntaxOnly) |
