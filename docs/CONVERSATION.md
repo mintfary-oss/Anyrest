@@ -120,11 +120,54 @@ for docker.io/library/alpine:3.21: unexpected status from HEAD request:
 
 ---
 
+---
+
+## Сессия 9 — --pull=never + РФ-стабильные зеркала Docker Hub
+
+**Ошибка:**
+```
+invalid argument "never" for "--pull" flag:
+strconv.ParseBool: parsing "never": invalid syntax
+```
+
+**Причина:** Старые версии Docker Compose принимают только `true/false` для `--pull`.
+
+**Также:** `mirror.gcr.io` (Google) нестабилен / блокируется в России.
+
+**Исправления:**
+1. Убран флаг `--pull=never` — `docker compose build` использует кэш автоматически
+2. Зеркала заменены на РФ-доступные:
+   - `https://huecker.io` — работает в России (проверено)
+   - `https://dockerhub.timeweb.cloud` — зеркало Timeweb (российский хостер)
+   - `https://mirror.gcr.io` — резерв за пределами РФ
+3. DNS в `daemon.json`: `77.88.8.8` (Yandex) + `1.1.1.1` + `8.8.8.8`
+4. `start_stack()`: повтор сборки до 3 раз при ошибке
+
+---
+
+## Сессия 10 — Подтверждение обновления
+
+**Запрос:** «Обновил репозиторий»
+
+Финальная проверка всего кода после всех исправлений:
+
+| Компонент | Статус |
+|-----------|--------|
+| Go server (`go build + go vet`) | ✅ OK |
+| Go agent (`go build + go vet`) | ✅ OK |
+| React/TypeScript (`tsc + vite`) | ✅ OK, 217 KB |
+| install.sh (bash -n) | ✅ OK |
+| `--pull=never` удалён | ✅ |
+| Зеркала huecker.io + timeweb | ✅ оба отвечают |
+| daemon.json DNS Yandex+CF+Google | ✅ |
+
+---
+
 ## Текущее состояние
 
 **URL:** https://github.com/mintfary-oss/Anyrest  
 **Ветка:** `main`  
-**Последний коммит:** полный аудит, все docs обновлены
+**Коммиты:** 10 сессий, 13 исправленных ошибок
 
 ### Запуск (одна команда):
 ```bash

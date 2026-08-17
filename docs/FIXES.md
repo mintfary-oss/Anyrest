@@ -92,6 +92,26 @@
 
 ---
 
+## #14 — `--pull=never` не поддерживается старым Docker Compose
+
+**Ошибка:** `invalid argument "never" for "--pull" flag: strconv.ParseBool: parsing "never": invalid syntax`  
+**Причина:** В старых версиях Docker Compose `--pull` принимает только `true`/`false`, не строку `never`.  
+**Исправление:** Убран флаг полностью — `docker compose build` без параметров использует кэш автоматически.
+
+---
+
+## #15 — `mirror.gcr.io` нестабилен в России
+
+**Причина:** Google (GCR) блокируется или нестабилен в РФ.  
+**Исправление:** Зеркала в `/etc/docker/daemon.json` заменены на РФ-доступные:
+- `https://huecker.io` — публичное зеркало, работает в России
+- `https://dockerhub.timeweb.cloud` — зеркало Timeweb (российский хостер)
+- `https://mirror.gcr.io` — оставлено как резервное
+
+Добавлен DNS: `77.88.8.8` (Yandex), `1.1.1.1` (Cloudflare), `8.8.8.8` (Google).
+
+---
+
 ## #13 — Docker Hub 429 Too Many Requests (alpine:3.21)
 
 **Ошибка:**
