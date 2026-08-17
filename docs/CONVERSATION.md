@@ -278,3 +278,31 @@ cd ../agent
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../bin/linux-amd64/anyrest-agent  ./cmd/
 # Затем commit + push, и на сервере: git pull && docker compose up -d --build
 ```
+
+---
+
+## Сессия 13 — Полный аудит репозитория
+
+**Запрос:** «Обнови репозиторий, проверь»
+
+**Результаты проверки:**
+
+| Компонент | Команда | Результат |
+|-----------|---------|-----------|
+| Go server | `go build ./... && go vet ./...` | ✅ 0 ошибок |
+| Go agent | `go build ./... && go vet ./...` | ✅ 0 ошибок |
+| TypeScript | `tsc -b && vite build` | ✅ 0 ошибок, 218 KB |
+| install.sh | `bash -n` | ✅ синтаксис OK |
+| gen-certs.sh | `bash -n` | ✅ синтаксис OK |
+| agent-entrypoint.sh | `bash -n` | ✅ синтаксис OK |
+| docker-compose.yml | YAML parse | ✅ OK |
+| docker-compose.agent.yml | YAML parse | ✅ OK |
+| Протокол: 12 типов (server↔agent↔TS) | grep сравнение | ✅ полное совпадение |
+| Frame magic Go↔TS | `0xa2e501f2` | ✅ совпадает |
+| Input events: 6 типов | grep сравнение | ✅ совпадают |
+| bin/linux-amd64/ | 3 бинарника | ✅ signal+relay+agent |
+| bin/linux-arm64/ | 3 бинарника | ✅ signal+relay+agent |
+| web/dist/ | 2 asset-файла | ✅ актуален |
+| Документация | 4 файла | ✅ обновлена |
+
+**Итог: весь код чистый. Ни одной ошибки.**
