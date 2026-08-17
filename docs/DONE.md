@@ -1,197 +1,132 @@
 # Что реализовано
 
-## Статус: ✅ MVP готов к деплою
+## Статус: ✅ MVP готов — все компоненты проверены
+
+**Последний аудит:** сессия 8 — 0 ошибок в Go, TypeScript, bash, nginx, протоколах.
 
 ---
 
-## 1. Сервер сигнализации (`server/cmd/signal/`)
+## Серверная часть (Go)
 
-**Файл:** `server/cmd/signal/main.go`
+### Сервер сигнализации `server/cmd/signal/`
+- WebSocket-сервер, регистрация пиров с 9-значным ID
+- Брокеринг WebRTC offer/answer/ICE
+- Heartbeat ping/pong, `/health` endpoint
+- Relay fallback через HMAC-токен
 
-- WebSocket-сервер на Go с поддержкой TLS
-- Регистрация пиров с уникальным 9-значным ID (аналог AnyDesk)
-- Брокеринг WebRTC offer/answer/ICE между агентом и вьювером
-- Heartbeat (ping/pong) для поддержания соединений
-- Автоматический fallback на relay-сервер при недоступности P2P
-- Endpoint `/health` для мониторинга
-- Конфигурация через флаги командной строки
+### Сервер ретрансляции `server/cmd/relay/`
+- TCP relay для случаев когда P2P недоступен
+- HMAC-SHA256 аутентификация, временны́е токены (30 сек)
+- Прозрачный io.CopyBuffer
 
----
-
-## 2. Сервер ретрансляции (`server/cmd/relay/`)
-
-**Файл:** `server/internal/relay/relay.go`
-
-- TCP relay для случаев, когда P2P hole-punching не работает
-- HMAC-SHA256 аутентификация с временны́м окном (30 сек)
-- Сопряжение двух TCP-соединений по session_id + token
-- Прозрачное байтовое копирование (`io.CopyBuffer`)
-- Защита от replay-атак через временны́е корзины
+### Реестр пиров `server/internal/peer/`
+- Потокобезопасный in-memory реестр
+- 9-значные уникальные ID без коллизий
 
 ---
 
-## 3. Реестр пиров (`server/internal/peer/`)
+## Десктопный агент (Go) `agent/`
 
-- Потокобезопасный in-memory реестр всех активных соединений
-- Генерация уникальных 9-значных IDs без коллизий
-- SafeWrite — запись в WebSocket без гонок
-
----
-
-## 4. Генератор сертификатов (`certs/gen-certs.sh`)
-
-- Автоматическое создание корневого CA (4096 bit RSA, SHA-256)
-- Серверный сертификат с IP-SAN для всех сетевых интерфейсов
-- Поддержка IPv4 и IPv6 адресов
-- Установка CA в системные хранилища:
-  - Ubuntu/Debian: `update-ca-certificates`
-  - RHEL/CentOS: `update-ca-trust`
-  - macOS: `security add-trusted-cert`
-  - NSS-базы Chrome и Firefox (`certutil`)
-- Вывод fingerprint и SANs по завершению
+- Захват экрана: `kbinani/screenshot` (X11 / DXGI / CoreGraphics)
+- Масштабирование до 1280×720, JPEG-кодирование
+- WebRTC P2P через `pion/webrtc v4`
+- Инъекция ввода: `xdotool` (X11 XTEST)
+- Авто-реконнект к сигнальному серверу
 
 ---
 
-## 5. Веб-клиент (`web/src/`)
+## Веб-клиент (React + TypeScript) `web/`
 
-### `lib/protocol.ts`
-- TypeScript-типы для всего протокола сигнализации
-- Типы входных событий (мышь, клавиатура, скролл)
+### `lib/signaling.ts`
+- WebSocket с авто-реконнектом (до 30 сек)
+- Типизированные события
 
-### `lib/signaling.ts` — `SignalingClient`
-- WebSocket-клиент с типизированными подписками на события
-- Авто-реконнект с экспоненциальной задержкой (до 30 сек)
-- Регистрация пира и хранение peer_id
-- Pong-ответы на heartbeat
+### `lib/webrtc.ts`
+- RTCPeerConnection lifecycle
+- Декодирование JPEG-фреймов из Data Channel
+- Заголовок: magic(4) + w(2) + h(2) + seq(4) = 12 байт
 
-### `lib/webrtc.ts` — `WebRTCViewer`
-- Управление жизненным циклом `RTCPeerConnection`
-- Получение offer от агента → создание answer
-- Trickle ICE кандидаты через сигнальный канал
-- Декодирование JPEG-фреймов из бинарных data channel сообщений
-- Разбор 12-байтного заголовка (magic + width + height + seq)
-- Delivery через Blob URL (с автоматическим revoke)
-- Data channel `input` для отправки событий ввода
+### Компоненты
+- `ConnectForm` — ввод 9-значного ID (XXX XXX XXX)
+- `RemoteScreen` — canvas-рендеринг, нормализованные координаты мыши
+- `StatusBar` — dot-индикатор сервера, бейдж состояния
+- `HelpPage` — overlay с 7 разделами руководства
 
-### `components/ConnectForm.tsx`
-- Форма ввода 9-значного ID с форматированием XXX XXX XXX
-- Отображение собственного ID с кнопкой копирования
-- Блокировка при отсутствии соединения с сервером
-
-### `components/RemoteScreen.tsx`
-- Canvas-рендеринг JPEG-фреймов (через `Image` + `drawImage`)
-- Нормализация координат мыши (0–1) для масштабирования
-- Обработка: mousemove, mousedown, mouseup, wheel, keydown, keyup
-- Блокировка кнопки `Ctrl+R/L/W/T` для навигации браузера
-- `tabIndex=0` для захвата фокуса клавиатуры
-
-### `components/StatusBar.tsx`
-- Индикатор состояния сигнального сервера (зелёный/красный dot)
-- Бейдж состояния подключения: idle/connecting/connected/failed
-- Кнопка Disconnect в режиме активной сессии
-
-### `components/HelpOverlay.tsx`
-- Кнопка `?` в правом верхнем углу шапки
-- Overlay с полным руководством пользователя (7 разделов):
-  - Быстрый старт
-  - Установка агента (Docker, скрипт, флаги CLI)
-  - Подключение (пошаговая инструкция)
-  - Управление (горячие клавиши и мышь)
-  - Сертификаты (Chrome, Firefox, Linux, Windows, macOS)
-  - Безопасность (таблица слоёв шифрования)
-  - Устранение проблем (6 частых проблем)
-- Все адреса/команды подставляются из `window.location` автоматически
-
-### Стили (`index.css`)
-- Тёмная тема (цвета vars), отзывчивый layout
-- Sidebar (280px) + fullscreen canvas
-- Google Fonts Inter
+### Собранные файлы `web/dist/` ✅ (в репозитории)
+```
+web/dist/index.html              0.7 KB
+web/dist/assets/index-*.css      8.3 KB (gzip: 2.1 KB)
+web/dist/assets/index-*.js     218.0 KB (gzip: 67.9 KB)
+web/dist/favicon.svg             9.3 KB
+web/dist/icons.svg               4.9 KB
+```
 
 ---
 
-## 6. Десктопный агент (`agent/`)
-
-### `internal/capture/capture.go`
-- Захват экрана через `kbinani/screenshot` (X11, DXGI, CoreGraphics)
-- Автоматическое масштабирование до 1280×720 (бинарный scaler)
-- JPEG-кодирование (`image/jpeg`) с настраиваемым quality
-- Поддержка нескольких дисплеев
-
-### `internal/input/`
-- Интерфейс `Injector` (MouseMove, MouseDown, MouseUp, Scroll, KeyDown, KeyUp)
-- `LinuxInjector` — инъекция через `xdotool` (X11 XTEST extension)
-- Маппинг JS key names → xdotool key names
-- `StubInjector` — заглушка для других платформ
-- Фабричные функции с build tags (`factory_linux.go`, `factory_other.go`)
-
-### `internal/agent/agent.go`
-- Авто-реконнект к сигнальному серверу (каждые 3 сек)
-- Создание WebRTC PeerConnection при запросе от вьювера
-- Отправка offer → ожидание answer → применение ICE
-- Data channel `frames` (ordered, binary) — поток JPEG-фреймов
-- 12-байтный заголовок: magic(4) + width(2) + height(2) + seq(4)
-- Frame loop на тиккере по целевому FPS
-- Data channel `input` — приём событий ввода от вьювера
-- Преобразование нормализованных координат (0–1) в пиксели
-
----
-
-## 7. Docker Compose + NGINX
+## Инфраструктура
 
 ### `nginx/nginx.conf`
 - HTTP → HTTPS редирект
-- TLS 1.2/1.3 с современными шифрами (одна строка — проверено)
+- TLS 1.2/1.3, современные шифры (одна строка)
 - HSTS, X-Content-Type-Options, X-Frame-Options
-- WebSocket proxy `/ws` → signaling server с таймаутами 3600s
-- Раздача `ca.crt` по `/certs/ca.crt` для установки в браузер
-- Статические файлы с агрессивным кэшированием (1 год для fingerprinted assets)
+- WebSocket proxy `/ws` (timeout 3600s)
+- Раздача `/certs/ca.crt` для установки в браузер
+- SPA fallback `try_files $uri /index.html`
 
 ### `docker-compose.yml`
-- Сервис `signal` — сервер сигнализации (internal), healthcheck через wget
-- Сервис `relay` — сервер ретрансляции (порт 8081), healthcheck через nc
-- Сервис `web` — NGINX + React (порты 80, 443)
-- Внутренняя сеть `anyrest-internal`
-- `restart: unless-stopped`
-
-### `docker-compose.agent.yml`
-- `network_mode: host` для WebRTC ICE кандидатов
-- Монтирование X11 сокета `/tmp/.X11-unix`
-- Переменная `DISPLAY` для захвата экрана
+- `signal` — WebSocket, healthcheck wget
+- `relay` — TCP :8081, healthcheck nc
+- `web` — NGINX :80/:443, volume `./certs`
 
 ### Dockerfiles
-- `Dockerfile.server` — multi-stage: Go builder → Alpine (wget для healthcheck)
-- `Dockerfile.web` — multi-stage: **Node 24** builder → NGINX alpine
-- `Dockerfile.agent` — Alpine с xdotool
+- `Dockerfile.server` — Go builder → Alpine (wget)
+- `Dockerfile.web` — **NGINX-only** (без Node.js/npm, ~5 сек сборки)
+- `Dockerfile.agent` — Go builder → Alpine (xdotool)
+
+### `install.sh` — авто-установщик
+1. Определяет публичный IP (4 fallback-сервиса)
+2. Устанавливает Docker
+3. **Настраивает зеркало Docker Hub** (`mirror.gcr.io`) → обход rate limit 429
+4. **Предзагружает базовые образы** с 5 попытками и backoff
+5. Клонирует / обновляет репозиторий
+6. Генерирует TLS-сертификаты (IP-SAN, 4096 bit)
+7. Устанавливает CA в системное хранилище
+8. Создаёт `.env` с random RELAY_SECRET
+9. `docker compose build --pull=never` + `up -d`
+10. Ожидает readiness (wget health-poll)
+
+### `certs/gen-certs.sh`
+- CA + server cert с IP-SAN
+- Поддержка Debian/RHEL/macOS NSS
+- Без process substitution (работает в Alpine)
 
 ---
 
-## 8. Авто-установщик (`install.sh`)
+## Результаты аудита (сессия 8)
 
-- Определение публичного IP (4 fallback-сервиса + ip addr)
-- Автоматическая установка Docker (через get.docker.com)
-- Клонирование / обновление репозитория
-- Генерация сертификатов и установка CA в системное хранилище
-- Запись `.env` с автогенерированным RELAY_SECRET
-- Сборка и запуск Docker Compose
-- Ожидание готовности (health-poll до 60 сек)
-- Установка systemd-сервиса для агента (Linux)
-- Режимы: сервер (по умолчанию), `--agent` для управляемого ПК
-- Цветной вывод, информативные сообщения
+| Проверка | Результат |
+|----------|-----------|
+| Go server: `go vet + build` | ✅ 0 ошибок |
+| Go agent: `go vet + build` | ✅ 0 ошибок |
+| TypeScript: `tsc -b + vite build` | ✅ 0 ошибок |
+| nginx.conf (10 проверок) | ✅ OK |
+| docker-compose.yml YAML | ✅ OK |
+| install.sh / gen-certs.sh / entrypoint.sh | ✅ синтаксис OK |
+| Протокол server↔agent↔TS (12 типов) | ✅ совпадают |
+| Frame magic Go↔TS | ✅ `0xa2e501f2` |
+| Input events (6 типов) | ✅ синхронизированы |
+| HMAC token format | ✅ идентичен |
+| RELAY_SECRET во всех файлах | ✅ согласован |
 
 ---
 
-## Итог
+## Дорожная карта
 
-| Требование | Статус |
-|---|---|
-| Без облачных ресурсов | ✅ Всё self-hosted |
-| Docker авто-установка | ✅ `install.sh` + `docker-compose.yml` |
-| HTTPS без домена | ✅ IP-SAN сертификат |
-| Браузеры не блокируют | ✅ CA устанавливается в систему |
-| E2E шифрование | ✅ DTLS 1.3 + AES-256-GCM |
-| Все браузеры | ✅ WebRTC поддерживается везде |
-| Linux агент | ✅ X11 + xdotool |
-| WebRTC P2P | ✅ pion/webrtc v4 |
-| Relay fallback | ✅ TCP + HMAC |
-| Руководство в веб-интерфейсе | ✅ HelpOverlay (кнопка ?) |
-| Docker сборка без ошибок | ✅ исправлено (node:24, no erasableSyntaxOnly) |
+| Функция | Приоритет |
+|---------|-----------|
+| Агент для Windows (Win32 API) | Высокий |
+| PIN-код доступа к агенту | Высокий |
+| H.264 видео-трек (лучше JPEG) | Средний |
+| Передача файлов (Data Channel) | Средний |
+| Многомониторный режим | Низкий |
+| Мобильный клиент (PWA) | Низкий |

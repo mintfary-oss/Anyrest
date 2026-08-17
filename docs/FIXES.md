@@ -1,256 +1,106 @@
-# Ошибки и исправления в процессе разработки
+# Ошибки и исправления
 
 ---
 
-## Ошибка #1: `input.NewStubInjector` не определён на Linux
+## #1 — `input.NewStubInjector` не определён на Linux
 
-**Когда:** Сборка агента (`go build -o /dev/null ./...`)
+**Ошибка:** `cmd/main.go:80:16: undefined: input.NewStubInjector`  
+**Причина:** build tag `!linux` — файл не компилируется на Linux.  
+**Исправление:** Созданы `factory_linux.go` / `factory_other.go` с `NewDefaultInjector()`.
+
+---
+
+## #2 — PR не создан (пустой репозиторий)
+
+**Ошибка:** `GraphQL: Head sha can't be blank, No commits between main and neo/...`  
+**Причина:** Репозиторий был пустым — нет ветки `main`.  
+**Исправление:** Прямой push на `main` как initial commit.
+
+---
+
+## #3 — Аутентификация git push
+
+**Ошибка:** `remote: Invalid username or token`  
+**Исправление:** `git remote set-url origin "https://TOKEN@github.com/..."`
+
+---
+
+## #4 — Стрим видео: VideoTrack → JPEG Data Channel
+
+**Проблема:** H.264/VP8 требует CGO (libx264, libvpx) — сложная Docker-сборка.  
+**Решение:** JPEG-фреймы через Data Channel. 12-байт header + JPEG payload. Без CGO.
+
+---
+
+## #5 — `<video>` вместо `<canvas>` в RemoteScreen
+
+**Причина:** `<video srcObject>` работает только с MediaStream, не с Data Channel.  
+**Исправление:** `<canvas>` + `Image + drawImage` + `URL.revokeObjectURL`.
+
+---
+
+## #6 — `vite.config.ts` — `https: true` без сертификатов
+
+**Исправление:** IIFE, проверяющий наличие файлов, возвращает `{ cert, key }` или `undefined`.
+
+---
+
+## #7 — `Dockerfile.server` — `FROM scratch` без shell
+
+**Ошибка:** healthcheck `CMD-SHELL` не работает в `scratch`.  
+**Исправление:** `FROM alpine:3.21` + `apk add wget`.
+
+---
+
+## #8 — `nginx.conf` — ssl_ciphers на двух строках
+
+**Ошибка:** `nginx: [emerg] invalid parameter`  
+**Исправление:** Весь список шифров в одну строку.
+
+---
+
+## #9 — `gen-certs.sh` — process substitution `< <(...)`
+
+**Ошибка:** `bash: /dev/fd/63: No such file or directory` (Alpine без `/dev/fd`).  
+**Исправление:** `mktemp` вместо process substitution.
+
+---
+
+## #10 — `npm ci` — "Exit handler never called!"
+
+**Ошибка:** `[web web-builder 4/6] RUN npm ci: 105.3s — Exit handler never called!`  
+**Причина:** `node:22-alpine` → npm 10, lockfile создан npm 11 (lockfileVersion 3).  
+**Исправление:** `node:22-alpine` → `node:24-alpine` (npm 11).
+
+---
+
+## #11 — TypeScript TS1294: `erasableSyntaxOnly` + parameter properties
+
+**Ошибка:** `error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled`  
+**Причина:** `constructor(private readonly x: T)` запрещён при `erasableSyntaxOnly: true`.  
+**Исправление:** Удалён флаг из `tsconfig.app.json` (Vite/esbuild сам транспилирует).
+
+---
+
+## #12 — npm install зависает на шаге 4/6 (~118 сек)
+
+**Ошибка:** Docker скачивал 27 npm-пакетов при каждой чистой установке.  
+**Исправление:**
+- `web/dist/` добавлен в репозиторий (pre-built)
+- `Dockerfile.web` = NGINX-only, без Node.js и npm
+- Сборка web-контейнера: 2–3 мин → ~5 сек
+
+---
+
+## #13 — Docker Hub 429 Too Many Requests (alpine:3.21)
 
 **Ошибка:**
 ```
-# github.com/mintfary-oss/anyrest/agent/cmd
-cmd/main.go:80:16: undefined: input.NewStubInjector
+alpine:3.21: unexpected status from HEAD request to
+https://registry-1.docker.io/v2/library/alpine/manifests/3.21: 429 Too Many Requests
 ```
-
-**Причина:**  
-`input_stub.go` имеет build tag `//go:build !linux` — на Linux он не компилируется.  
-В `cmd/main.go` использовался `switch runtime.GOOS` с вызовом `input.NewStubInjector()` в ветке `default`, но на Linux компилятор видит только функции из `input_linux.go`.
-
-**Исправление:**  
-Созданы два файла-фабрики с взаимоисключающими build tags:
-
-```go
-// factory_linux.go
-//go:build linux
-func NewDefaultInjector(display string) Injector {
-    return NewLinuxInjector(display)
-}
-
-// factory_other.go
-//go:build !linux
-func NewDefaultInjector(display string) Injector {
-    return NewStubInjector()
-}
-```
-
-`cmd/main.go` теперь просто вызывает `input.NewDefaultInjector(*displayStr)` — компилируется на любой ОС.
-
----
-
-## Ошибка #2: PR не создан — пустой репозиторий
-
-**Когда:** `gh pr create` для ветки `neo/initial-anyrest-impl-k9a7f`
-
-**Ошибка:**
-```
-pull request create failed: GraphQL: Head sha can't be blank, 
-Base sha can't be blank, No commits between main and neo/initial-anyrest-impl-k9a7f, 
-Base ref must be a branch (createPullRequest)
-```
-
-**Причина:**  
-Репозиторий был полностью пустым — нет ветки `main`, нет ни одного коммита на базовой ветке. GitHub не позволяет создать PR без базовой ветки.
-
-**Исправление:**  
-Следуем процедуре для пустых репозиториев: напрямую пушим коммит на ветку `main`, создавая её как первичную ветку репозитория. Документационные файлы добавлены по запросу пользователя перед итоговым пушем.
-
----
-
-## Ошибка #3: Аутентификация при git push
-
-**Когда:** `git push -u origin neo/initial-anyrest-impl-k9a7f`
-
-**Ошибка:**
-```
-remote: Invalid username or token. 
-Password authentication is not supported for Git operations.
-fatal: Authentication failed
-```
-
-**Причина:**  
-Стандартный git credential helper не имел токена для `github.com/mintfary-oss`.
-
-**Исправление:**  
-```bash
-git remote set-url origin "https://x-access-token:TOKEN@github.com/mintfary-oss/Anyrest.git"
-```
-
----
-
-## Ошибка #4: Стрим видео vs JPEG через Data Channel
-
-**Когда:** Проектирование видео-стрима
-
-**Проблема:**  
-Первоначальный план предполагал WebRTC VideoTrack с H.264/VP8 кодированием в Go.  
-Для этого нужны CGO-зависимости (libx264, libvpx), которые:
-- Усложняют Docker-сборку
-- Требуют нативных библиотек в образе
-- Добавляют нестабильные C-биндинги
-
-**Решение:**  
-Использование **JPEG-фреймов через Data Channel**:
-- Захват → JPEG → бинарное сообщение (12-байт header + payload)
-- Нет CGO зависимостей
-- Работает сразу на любой платформе
-- Качество достаточно для remote desktop при 15fps, 1280×720, quality=75
-- Типичный размер фрейма: 30–150 KB (хорошо вписывается в SCTP 256KB лимит)
-
----
-
-## Ошибка #5: RemoteScreen использовал `<video>` вместо `<canvas>`
-
-**Когда:** Обновление веб-клиента под JPEG-фреймы
-
-**Проблема:**  
-`RemoteScreen.tsx` использовал `<video srcObject={stream}>` — это работает только с `MediaStream` из WebRTC VideoTrack, но не с бинарными Data Channel сообщениями.
-
-**Исправление:**  
-Переработан на `<canvas ref={canvasRef}>` с рендерингом через `Image + drawImage`:
-```typescript
-const img = new Image();
-img.onload = () => {
-    ctx.drawImage(img, 0, 0);
-    URL.revokeObjectURL(frameUrl); // освобождение памяти
-};
-img.src = URL.createObjectURL(new Blob([jpeg], { type: 'image/jpeg' }));
-```
-
----
-
-## Ошибка #6: `vite.config.ts` — неправильная структура HTTPS
-
-**Когда:** Конфигурация Vite dev-сервера
-
-**Проблема:**  
-`https: true` в Vite не работает если нет certfile — нужно явно передавать cert/key или undefined.
-
-**Исправление:**  
-```typescript
-https: (() => {
-    try {
-        if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
-            return { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) }
-        }
-    } catch { /* ignore */ }
-    return undefined  // fallback на HTTP
-})(),
-```
-
-Сервер поднимается на HTTP если сертификатов нет (удобно для разработки).
-
----
-
-## Ошибка #7: `Dockerfile.server` — FROM scratch без shell
-
-**Когда:** Первый `docker compose up --build` на реальном сервере
-
-**Ошибка:**
-```
-web container depends_on signal (healthy) — never became healthy
-```
-
-**Причина:**  
-`FROM scratch` не содержит shell (`/bin/sh`), поэтому `CMD-SHELL` в healthcheck не работает. Docker считает контейнер нездоровым, и web-контейнер не стартует.
-
-**Исправление:**  
-Заменено на `FROM alpine:3.21` с установкой `wget` и `ca-certificates`.  
-Healthcheck переписан на `wget -qO- http://localhost:8080/health`.
-
----
-
-## Ошибка #8: `nginx.conf` — ssl_ciphers на нескольких строках
-
-**Когда:** Старт NGINX-контейнера
-
-**Ошибка:**
-```
-nginx: [emerg] invalid parameter "ECDHE-RSA-AES128-GCM-SHA256:..." 
-in /etc/nginx/nginx.conf:44
-```
-
-**Причина:**  
-Директива `ssl_ciphers` была разбита на несколько строк — NGINX не поддерживает продолжение строки с `\`.
-
-**Исправление:**  
-Весь список шифров помещён в одну строку.
-
----
-
-## Ошибка #9: `gen-certs.sh` — process substitution `< <(...)`
-
-**Когда:** Генерация сертификатов в Docker Alpine
-
-**Ошибка:**
-```
-bash: /dev/fd/63: No such file or directory
-```
-
-**Причина:**  
-`< <(...)` (process substitution) требует `/dev/fd/` — в минимальных Alpine-контейнерах этого нет.
-
-**Исправление:**  
-Использование временного файла через `mktemp`:
-```bash
-local ip_file
-ip_file="$(mktemp)"
-collect_ips | sort -u > "$ip_file"
-while IFS= read -r ip; do
-    ...
-done < "$ip_file"
-rm -f "$ip_file"
-```
-
----
-
-## Ошибка #10: `npm ci` — "Exit handler never called!" в Docker
-
-**Когда:** `docker compose up --build` — стадия `[web web-builder 4/6] RUN npm ci`
-
-**Ошибка:**
-```
-npm error Exit handler never called!
-npm error This is an error with npm itself. Please report this error at:
-npm error    https://github.com/npm/cli/issues
-```
-
-**Причина:**  
-- `node:22-alpine` поставляется с **npm 10**
-- `package-lock.json` в репозитории создан **npm 11** (lockfileVersion: 3)
-- npm 10 не может полностью обработать lockfile v3 → зависает/крашится через ~105 сек
-
-**Исправление:**  
-В `Dockerfile.web` изменена базовая образ:
-```dockerfile
-# Было:
-FROM node:22-alpine AS web-builder
-# Стало:
-FROM node:24-alpine AS web-builder
-```
-Node 24 поставляется с npm 11 — той же версией, что создала lockfile. `npm ci` работает без ошибок.
-
----
-
-## Ошибка #11: TypeScript TS1294 — `erasableSyntaxOnly` запрещает parameter properties
-
-**Когда:** `npm run build` в стадии Docker (после исправления ошибки #10)
-
-**Ошибка:**
-```
-src/lib/signaling.ts(24,15): error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled.
-src/lib/webrtc.ts(38,5): error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled.
-src/lib/webrtc.ts(39,5): error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled.
-src/lib/webrtc.ts(40,5): error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled.
-```
-
-**Причина:**  
-`tsconfig.app.json` содержал `"erasableSyntaxOnly": true`. Этот флаг (TypeScript 5.5+) запрещает синтаксис, который не может быть просто «стёрт» при компиляции — в том числе **parameter properties** в конструкторах:
-```typescript
-// Запрещено при erasableSyntaxOnly: true
-constructor(private readonly serverUrl: string) { ... }
-```
-Флаг предназначен для сред, где TypeScript запускается напрямую (Node.js native strips). Для Vite/esbuild он не нужен — esbuild сам транспилирует TypeScript.
-
-**Исправление:**  
-Удалена строка `"erasableSyntaxOnly": true` из `web/tsconfig.app.json`.  
-Проверено: `npm run build` выдаёт чистый бандл 217 KB, 0 ошибок TypeScript.
+**Причина:** IP сервера превысил лимит анонимных pull-запросов к Docker Hub (100/6h).  
+**Исправление в `install.sh`:**
+1. `configure_mirror()` — `/etc/docker/daemon.json` с `mirror.gcr.io` + `dockerhub.azk8s.cn`
+2. `pull_base_images()` — предварительный pull с 5 попытками и нарастающим backoff
+3. `docker compose build --pull=never` — без обращений к registry во время сборки
