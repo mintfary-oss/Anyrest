@@ -1,38 +1,20 @@
-# ─── Stage 1: Build the React web client ─────────────────────────────────────
-# node:24-alpine ships npm 11, which is required for lockfileVersion 3.
-# We intentionally install from package.json only (no lockfile) so the build
-# never fails due to npm-version / lockfile-version mismatches.
-FROM node:24-alpine AS web-builder
-
-WORKDIR /app
-
-# Copy only the package manifest (NOT package-lock.json).
-# npm install resolves versions from semver ranges in package.json,
-# which is more resilient than npm ci in a fresh container context.
-COPY web/package.json ./
-
-# --no-audit   skip network round-trip to the npm audit endpoint
-# --no-fund    suppress funding messages
-# --prefer-offline  use cache if present, avoids redundant registry calls
-RUN npm install --no-audit --no-fund --prefer-offline
-
-# Copy the rest of the source after deps are installed (better layer caching)
-COPY web/ ./
-
-# tsc type-check + vite production bundle
-RUN npm run build
-
-# ─── Stage 2: NGINX serving static files ─────────────────────────────────────
+# Anyrest Web — NGINX serving pre-built React static files
+#
+# The React app is pre-built (web/dist/ is committed to the repo).
+# This Dockerfile just copies the static files into NGINX — no npm,
+# no Node.js, no network calls. Build time: ~5 seconds.
+#
+# To rebuild the web app after source changes (run locally, then commit):
+#   cd web && npm install && npm run build && git add dist/ && git commit
 FROM nginx:1.27-alpine
 
 RUN rm /etc/nginx/conf.d/default.conf
 
-COPY nginx/nginx.conf /etc/nginx/nginx.conf
-COPY --from=web-builder /app/dist /usr/share/nginx/html
+COPY nginx/nginx.conf   /etc/nginx/nginx.conf
+COPY web/dist           /usr/share/nginx/html
 
-# Certificates are mounted at runtime via docker-compose.yml:
-#   volumes:
-#     - ./certs:/etc/nginx/certs:ro
+# Certificates are mounted at runtime via docker-compose.yml volumes:
+#   - ./certs:/etc/nginx/certs:ro
 # Required files: server.crt  server.key  ca.crt
 EXPOSE 80 443
 

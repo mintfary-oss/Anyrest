@@ -15,7 +15,7 @@ vendor/
 
 # Node / Web
 web/node_modules/
-web/dist/
+# web/dist is committed — server needs zero npm at deploy time
 
 # IDE
 .idea/
