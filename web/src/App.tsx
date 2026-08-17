@@ -6,8 +6,8 @@ import type { InputEvent } from './lib/protocol';
 import { ConnectForm } from './components/ConnectForm';
 import { RemoteScreen } from './components/RemoteScreen';
 import { StatusBar } from './components/StatusBar';
+import { HelpPage } from './components/HelpPage';
 
-// Signaling server URL — replaced by Docker env at runtime via window.ANYREST_SIGNAL_URL
 const SIGNAL_URL =
   (window as Window & { ANYREST_SIGNAL_URL?: string }).ANYREST_SIGNAL_URL ??
   `wss://${window.location.host}/ws`;
@@ -18,11 +18,12 @@ export const App: React.FC = () => {
   const [viewerState, setViewerState] = useState<ViewerState>('idle');
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
   const [remotePeerId, setRemotePeerId] = useState<string | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
 
   const signalingRef = useRef<SignalingClient | null>(null);
   const viewerRef = useRef<WebRTCViewer | null>(null);
 
-  // ── Boot ──────────────────────────────────────────────────────────────────
+  // ── Boot ─────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     const sig = new SignalingClient(SIGNAL_URL);
@@ -32,9 +33,7 @@ export const App: React.FC = () => {
       setSignalingOk(true);
       sig.register();
     });
-
     sig.addEventListener('close', () => setSignalingOk(false));
-
     sig.addEventListener('registered', ((ev: CustomEvent) => {
       setMyId((ev.detail as { peer_id: string }).peer_id);
     }) as EventListener);
@@ -48,19 +47,24 @@ export const App: React.FC = () => {
           setRemotePeerId(null);
         }
       },
-      // Each JPEG frame arrives as a Blob URL
       (url) => setFrameUrl(url),
     );
     viewerRef.current = viewer;
 
     sig.connect().catch(console.error);
-
-    return () => {
-      sig.disconnect();
-    };
+    return () => { sig.disconnect(); };
   }, []);
 
-  // ── Handlers ───────────────────────────────────────────────────────────
+  // Close help on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowHelp(false);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  // ── Handlers ──────────────────────────────────────────────────────────────
 
   const handleConnect = useCallback((targetId: string) => {
     setRemotePeerId(targetId);
@@ -78,9 +82,10 @@ export const App: React.FC = () => {
     viewerRef.current?.sendInput(event);
   }, []);
 
-  // ── Render ─────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────
 
   const isConnected = viewerState === 'connected';
+  const serverHost = window.location.host || 'localhost';
 
   return (
     <div className="app">
@@ -95,6 +100,13 @@ export const App: React.FC = () => {
           remotePeerId={remotePeerId}
           onDisconnect={handleDisconnect}
         />
+        <button
+          className="help-btn"
+          onClick={() => setShowHelp(true)}
+          title="Руководство пользователя"
+        >
+          ?
+        </button>
       </header>
 
       <main className="app-main">
@@ -106,16 +118,21 @@ export const App: React.FC = () => {
               disabled={!signalingOk || viewerState === 'connecting'}
             />
             <div className="info-box">
-              <h3>Getting started</h3>
+              <h3>Как подключиться</h3>
               <ol>
-                <li>Install the Anyrest agent on the remote PC.</li>
-                <li>Enter the 9-digit ID shown by the agent.</li>
-                <li>
-                  Click <strong>Connect</strong>.
-                </li>
+                <li>Установите агент на удалённый ПК.</li>
+                <li>Введите 9-значный ID агента.</li>
+                <li>Нажмите <strong>Connect</strong>.</li>
               </ol>
+              <button
+                className="connect-btn"
+                style={{ marginTop: 4 }}
+                onClick={() => setShowHelp(true)}
+              >
+                Подробное руководство
+              </button>
               <p className="security-note">
-                All traffic is end-to-end encrypted with DTLS 1.3 + AES-256-GCM.
+                Сквозное шифрование DTLS 1.3 + AES-256-GCM. Без облака.
               </p>
             </div>
           </div>
@@ -127,6 +144,13 @@ export const App: React.FC = () => {
           active={isConnected}
         />
       </main>
+
+      {showHelp && (
+        <HelpPage
+          onClose={() => setShowHelp(false)}
+          serverHost={serverHost}
+        />
+      )}
     </div>
   );
 };
