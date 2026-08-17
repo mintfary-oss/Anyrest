@@ -6,16 +6,19 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/mintfary-oss/Anyrest/main/install.sh | bash
 #
+# Работает в России: использует зеркала huecker.io и dockerhub.timeweb.cloud
+# вместо Docker Hub напрямую. Обходит блокировки и rate limit (429).
+#
 # Что делает скрипт автоматически:
 #   1. Определяет публичный IP сервера
 #   2. Устанавливает Docker (если не установлен)
-#   3. Настраивает зеркало Docker Hub (обход rate limit 429)
+#   3. Настраивает зеркала Docker Hub (РФ-стабильные: huecker.io, timeweb.cloud)
 #   4. Загружает базовые образы с повторами (до 5 попыток)
 #   5. Клонирует репозиторий в /opt/anyrest
 #   6. Генерирует TLS-сертификаты с IP сервера
 #   7. Устанавливает CA в системное хранилище
 #   8. Создаёт .env с безопасным случайным секретом
-#   9. Собирает и запускает Docker Compose
+#   9. Собирает и запускает Docker Compose (с повтором при ошибке)
 #  10. Выводит адрес — просто открываете в браузере
 #
 # Опции:
@@ -65,7 +68,6 @@ detect_ip() {
     ok "IP задан вручную: $SERVER_IP"
     return
   fi
-
   info "Определяю публичный IP..."
   for svc in \
       "https://api.ipify.org" \
@@ -79,10 +81,8 @@ detect_ip() {
       return
     fi
   done
-
   SERVER_IP=$(ip -o -4 addr show scope global 2>/dev/null \
     | awk '{print $4}' | cut -d/ -f1 | head -1) || true
-
   if [[ -z "$SERVER_IP" ]]; then
     warn "Не удалось определить IP автоматически."
     read -rp "  Введите IP сервера: " SERVER_IP
@@ -98,82 +98,63 @@ install_docker() {
     ok "Docker уже установлен: $(docker --version | awk '{print $3}' | tr -d ',')"
     return
   fi
-
   info "Устанавливаю Docker..."
   curl -fsSL https://get.docker.com | $SUDO bash -s -- --quiet 2>&1 \
     | grep -E 'Installing|installed|already' || true
-
   if command -v systemctl &>/dev/null; then
     $SUDO systemctl enable --now docker 2>/dev/null || true
   fi
-
   ok "Docker установлен."
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. Настройка зеркала Docker Hub (обход ошибки 429 Too Many Requests)
+# 3. Настройка зеркал Docker Hub
+#
+# Зеркала подобраны для стабильной работы в России:
+#   huecker.io           — публичное зеркало, работает в РФ
+#   dockerhub.timeweb.cloud — зеркало российского хостера Timeweb
+#   mirror.gcr.io        — Google (резервное, за пределами РФ)
+#
+# DNS: добавляем Yandex (77.88.8.8) + Cloudflare (1.1.1.1) + Google (8.8.8.8)
+# чтобы Docker-демон не завязывался на провайдерский DNS.
 # ─────────────────────────────────────────────────────────────────────────────
 configure_mirror() {
   local cfg="/etc/docker/daemon.json"
-
-  # Пропускаем если зеркало уже настроено
   if $SUDO grep -q "registry-mirrors" "$cfg" 2>/dev/null; then
-    ok "Зеркало Docker Hub уже настроено."
+    ok "Зеркала Docker Hub уже настроены."
     return
   fi
 
-  info "Настраиваю зеркало Docker Hub (mirror.gcr.io) для обхода rate limit..."
+  info "Настраиваю зеркала Docker Hub (РФ-стабильные)..."
   $SUDO mkdir -p /etc/docker
 
-  # Если daemon.json уже существует и содержит другие настройки — добавляем поле
-  if [[ -f "$cfg" ]]; then
-    # Backup
-    $SUDO cp "$cfg" "${cfg}.bak"
-    # Добавляем registry-mirrors через python (jq может отсутствовать)
-    $SUDO python3 -c "
-import json, sys
-with open('$cfg') as f:
-    d = json.load(f)
-d.setdefault('registry-mirrors', [])
-mirrors = ['https://mirror.gcr.io', 'https://dockerhub.azk8s.cn']
-for m in mirrors:
-    if m not in d['registry-mirrors']:
-        d['registry-mirrors'].append(m)
-with open('$cfg', 'w') as f:
-    json.dump(d, f, indent=2)
-" 2>/dev/null || \
-    $SUDO tee "$cfg" > /dev/null <<'DAEMON'
+  $SUDO tee "$cfg" > /dev/null <<'DAEMON'
 {
-  "registry-mirrors": ["https://mirror.gcr.io", "https://dockerhub.azk8s.cn"]
+  "registry-mirrors": [
+    "https://huecker.io",
+    "https://dockerhub.timeweb.cloud",
+    "https://mirror.gcr.io"
+  ],
+  "dns": ["77.88.8.8", "1.1.1.1", "8.8.8.8"]
 }
 DAEMON
-  else
-    $SUDO tee "$cfg" > /dev/null <<'DAEMON'
-{
-  "registry-mirrors": ["https://mirror.gcr.io", "https://dockerhub.azk8s.cn"]
-}
-DAEMON
-  fi
 
-  # Перезапускаем Docker чтобы зеркало вступило в силу
+  # Перезапускаем dockerd — зеркала вступают в силу немедленно
   if command -v systemctl &>/dev/null; then
     info "Перезапускаю Docker daemon..."
     $SUDO systemctl restart docker
-    sleep 4
+    sleep 5
   fi
-
-  ok "Зеркало Docker Hub настроено."
+  ok "Зеркала Docker Hub настроены (huecker.io, timeweb.cloud)."
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. Предварительная загрузка базовых образов (с повторами)
 # ─────────────────────────────────────────────────────────────────────────────
-# Загружаем образы заранее, до сборки, чтобы docker compose build
-# не получил 429 в середине компиляции.
 pull_with_retry() {
   local image="$1"
   local max=5
-  local delay=30
+  local delay=20
 
   for attempt in $(seq 1 $max); do
     info "Загружаю $image (попытка $attempt/$max)..."
@@ -184,17 +165,15 @@ pull_with_retry() {
     if [[ $attempt -lt $max ]]; then
       warn "Ошибка загрузки. Следующая попытка через ${delay}с..."
       sleep "$delay"
-      delay=$((delay + 15))  # увеличиваем задержку с каждой попыткой
+      delay=$((delay + 10))
     fi
   done
-
-  warn "Не удалось загрузить $image после $max попыток. Продолжаю (образ может быть в кэше)."
-  return 0  # не прерываем установку — образ может быть закэширован
+  warn "Не удалось загрузить $image после $max попыток (продолжаю — образ может быть в кэше)."
+  return 0
 }
 
 pull_base_images() {
   info "Загружаю базовые Docker-образы..."
-  # Порядок важен: загружаем builder-образы первыми (они самые тяжёлые)
   pull_with_retry "golang:1.26-alpine"
   pull_with_retry "alpine:3.21"
   pull_with_retry "nginx:1.27-alpine"
@@ -213,10 +192,9 @@ fetch_repo() {
     return
   fi
   if [[ -f "$INSTALL_DIR/docker-compose.yml" ]]; then
-    ok "Код уже есть в $INSTALL_DIR (не git-репозиторий, не обновляю)."
+    ok "Код уже есть в $INSTALL_DIR."
     return
   fi
-
   info "Клонирую репозиторий в $INSTALL_DIR..."
   $SUDO mkdir -p "$INSTALL_DIR"
   $SUDO chown "$(id -u):$(id -g)" "$INSTALL_DIR" 2>/dev/null || true
@@ -229,7 +207,6 @@ fetch_repo() {
 # ─────────────────────────────────────────────────────────────────────────────
 generate_certs() {
   local cert_dir="$INSTALL_DIR/certs"
-
   if [[ -f "$cert_dir/server.crt" && -f "$cert_dir/server.key" ]]; then
     if openssl x509 -in "$cert_dir/server.crt" -text -noout 2>/dev/null \
         | grep -q "IP Address:$SERVER_IP"; then
@@ -240,24 +217,20 @@ generate_certs() {
     rm -f "$cert_dir/server.crt" "$cert_dir/server.key" \
           "$cert_dir/ca.crt" "$cert_dir/ca.key" "$cert_dir/openssl.cnf"
   fi
-
   info "Генерирую TLS-сертификаты для IP $SERVER_IP..."
   chmod +x "$cert_dir/gen-certs.sh"
   bash "$cert_dir/gen-certs.sh" --ip "$SERVER_IP" --out "$cert_dir" 2>&1 \
     | grep -E '\[certs\]|ERROR' || true
-
   ok "Сертификаты созданы."
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 7. Установка CA в системное хранилище браузеров
+# 7. Установка CA в системное хранилище
 # ─────────────────────────────────────────────────────────────────────────────
 install_ca() {
   local ca="$INSTALL_DIR/certs/ca.crt"
-  [[ -f "$ca" ]] || { warn "ca.crt не найден, пропускаю установку CA."; return; }
-
+  [[ -f "$ca" ]] || { warn "ca.crt не найден, пропускаю."; return; }
   info "Устанавливаю CA-сертификат в систему..."
-
   if command -v update-ca-certificates &>/dev/null; then
     $SUDO cp "$ca" /usr/local/share/ca-certificates/anyrest-ca.crt
     $SUDO update-ca-certificates --fresh -q 2>/dev/null || true
@@ -265,14 +238,12 @@ install_ca() {
     $SUDO cp "$ca" /etc/pki/ca-trust/source/anchors/anyrest-ca.crt
     $SUDO update-ca-trust extract 2>/dev/null || true
   fi
-
   if command -v certutil &>/dev/null; then
     for d in "$HOME/.pki/nssdb" "$HOME/.mozilla/firefox/"*; do
       [[ -d "$d" ]] && certutil -A -d "sql:$d" -n "Anyrest Root CA" \
         -t "CT,," -i "$ca" 2>/dev/null || true
     done
   fi
-
   ok "CA установлен в систему."
 }
 
@@ -295,43 +266,54 @@ EOF
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 9. Запуск Docker Compose
-# Образы уже загружены функцией pull_base_images, поэтому используем
-# --pull=never чтобы docker compose не делал повторных pull-запросов.
+# 9. Сборка и запуск Docker Compose
+#
+# ВАЖНО: НЕ используем --pull=never — этот флаг не поддерживается в старых
+# версиях Docker Compose (strconv.ParseBool: parsing "never": invalid syntax).
+# Образы уже скачаны функцией pull_base_images, Docker использует локальный
+# кэш автоматически без дополнительных флагов.
 # ─────────────────────────────────────────────────────────────────────────────
 start_stack() {
-  info "Собираю Docker-образы..."
   cd "$INSTALL_DIR"
-
   docker compose down --remove-orphans 2>/dev/null || true
 
-  # --pull=never: базовые образы уже загружены, лишние запросы к registry не нужны
-  docker compose build --pull=never 2>&1
+  # Сборка с повтором (на случай временных ошибок сети)
+  local build_ok=false
+  for attempt in 1 2 3; do
+    info "Собираю Docker-образы (попытка $attempt/3)..."
+    if docker compose build 2>&1; then
+      build_ok=true
+      break
+    fi
+    warn "Ошибка сборки. Повтор через 20 сек..."
+    sleep 20
+    pull_base_images   # повторно скачиваем если кэш протух
+  done
+  [[ "$build_ok" == "true" ]] || die "Сборка не удалась после 3 попыток."
 
   info "Запускаю контейнеры..."
   docker compose up -d 2>&1
 
-  # Ждём пока web поднимется (до 60 сек)
+  # Ожидаем готовности (до 90 сек)
   info "Ожидаю запуска сервисов..."
   local i=0
-  while [[ $i -lt 60 ]]; do
-    if wget -qO- --no-check-certificate "https://$SERVER_IP/health" &>/dev/null 2>&1; then
+  while [[ $i -lt 90 ]]; do
+    if wget -qO- --no-check-certificate "https://$SERVER_IP/health" \
+        &>/dev/null 2>&1; then
       break
     fi
     sleep 1
     i=$((i + 1))
   done
-
   ok "Все сервисы запущены."
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 10. Установка агента (для управляемого ПК)
+# 10. Установка агента (управляемый ПК)
 # ─────────────────────────────────────────────────────────────────────────────
 start_agent() {
   info "Запускаю агент..."
   cd "$INSTALL_DIR"
-
   local signal_url
   signal_url=$(grep ANYREST_SIGNAL_URL "$INSTALL_DIR/.env" 2>/dev/null \
     | cut -d= -f2 || echo "wss://${SERVER_IP}/ws")
@@ -362,7 +344,6 @@ UNIT
     $SUDO systemctl daemon-reload
     $SUDO systemctl enable --now anyrest-agent.service 2>/dev/null || true
   fi
-
   ok "Агент запущен."
 }
 
