@@ -2,11 +2,24 @@
 ##############################################################################
 # Anyrest — Полностью автоматический установщик v2
 #
-# Одна команда — полностью рабочий сервер (~2–3 минуты):
+# Одна команда — полностью рабочий сервер (~2–3 минуты).
 #
+# ── Способы запуска ──────────────────────────────────────────────────────────
+#
+# Вариант 1 — jsDelivr CDN (рекомендуется, без rate limit):
+#   curl -fsSL https://cdn.jsdelivr.net/gh/mintfary-oss/Anyrest@main/install.sh | bash
+#
+# Вариант 2 — GitHub Raw (если не возвращает 429):
 #   curl -fsSL https://raw.githubusercontent.com/mintfary-oss/Anyrest/main/install.sh | bash
 #
-# Что делает скрипт:
+# Вариант 3 — wget:
+#   wget -qO- https://raw.githubusercontent.com/mintfary-oss/Anyrest/main/install.sh | bash
+#
+# Вариант 4 — git clone (самый надёжный, без HTTP rate limit):
+#   git clone --depth 1 https://github.com/mintfary-oss/Anyrest.git /opt/anyrest
+#   cd /opt/anyrest && bash install.sh
+#
+# ── Что делает скрипт ────────────────────────────────────────────────────────
 #   1. Определяет публичный IP и архитектуру (amd64 / arm64)
 #   2. Устанавливает Docker (если не установлен)
 #   3. Настраивает зеркала Docker Hub (РФ-стабильные: huecker.io, timeweb.cloud)

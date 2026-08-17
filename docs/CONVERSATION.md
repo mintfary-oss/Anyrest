@@ -236,6 +236,37 @@ docker builder prune -af && rm -rf /opt/anyrest
 curl -fsSL https://raw.githubusercontent.com/mintfary-oss/Anyrest/main/install.sh | bash
 ```
 
+---
+
+## Сессия 12 — curl 429 от raw.githubusercontent.com
+
+**Ошибка:** `curl: (22) The requested URL returned error: 429`
+
+**Причина:** GitHub CDN (`raw.githubusercontent.com`) применяет rate limiting по IP.
+При повторных запросах с одного сервера (установка, пересборка) IP блокируется на некоторое время.
+
+**Исправления:**
+
+1. **install.sh** — в шапку добавлены 4 способа запуска:
+   - Вариант 1 (рекомендуется): `https://cdn.jsdelivr.net/gh/mintfary-oss/Anyrest@main/install.sh` — jsDelivr CDN, зеркало GitHub без rate limit
+   - Вариант 2: GitHub Raw (работает при отсутствии блокировки)
+   - Вариант 3: wget (другой HTTP стек, иногда обходит лимит)
+   - Вариант 4: `git clone --depth 1` (самый надёжный — используй git, не HTTP)
+
+2. **PLAN.md** — обновлены команды установки
+
+**Рабочие команды прямо сейчас:**
+```bash
+# jsDelivr CDN (без rate limit):
+curl -fsSL https://cdn.jsdelivr.net/gh/mintfary-oss/Anyrest@main/install.sh | bash
+
+# git clone (100% надёжно):
+git clone --depth 1 https://github.com/mintfary-oss/Anyrest.git /opt/anyrest
+cd /opt/anyrest && bash install.sh
+```
+
+---
+
 ### Пересборка бинарников после изменений Go-кода:
 ```bash
 # Сервер:

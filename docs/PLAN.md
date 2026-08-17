@@ -80,9 +80,23 @@ Offset  Size  Field
 
 ## Развёртывание
 
-### Сервер (одна команда)
+### Сервер (~2–3 минуты)
+
+**Если raw.githubusercontent.com возвращает 429 — используйте jsDelivr:**
+
 ```bash
+# Вариант 1 — jsDelivr CDN (рекомендуется, без rate limit):
+curl -fsSL https://cdn.jsdelivr.net/gh/mintfary-oss/Anyrest@main/install.sh | bash
+
+# Вариант 2 — GitHub Raw:
 curl -fsSL https://raw.githubusercontent.com/mintfary-oss/Anyrest/main/install.sh | bash
+
+# Вариант 3 — wget:
+wget -qO- https://raw.githubusercontent.com/mintfary-oss/Anyrest/main/install.sh | bash
+
+# Вариант 4 — git clone (самый надёжный):
+git clone --depth 1 https://github.com/mintfary-oss/Anyrest.git /opt/anyrest
+cd /opt/anyrest && bash install.sh
 ```
 
 ### Удаление и переустановка
