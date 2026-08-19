@@ -1,28 +1,33 @@
 # Anyrest Signal / Relay Server
 #
 # Pre-built binaries are committed to bin/linux-{amd64,arm64}/.
-# No Go compiler, no network calls — build time: ~5 seconds.
+# Base image: busybox:1.37-musl — НЕТ apk add, НЕТ сетевых запросов при сборке.
 #
-# To rebuild the binaries after source changes (run locally, then commit):
+# Почему busybox вместо alpine:
+#   alpine требует `apk add ca-certificates wget` → скачивает с dl-cdn.alpinelinux.org
+#   В России этот CDN часто недоступен → зависание на 30+ минут.
+#   busybox:1.37-musl уже содержит wget и nc (applets) — apk не нужен.
+#   signal/relay — серверы, не делают исходящих TLS соединений → ca-certificates не нужны.
+#   Бинарник CGO_ENABLED=0 — полностью статический, работает без libc.
+#
+# Время сборки: ~3 секунды (только COPY + chmod).
+#
+# Для пересборки бинарников:
 #   cd server
 #   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" \
 #       -o ../bin/linux-amd64/anyrest-signal ./cmd/signal/
 #   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" \
-#       -o ../bin/linux-amd64/anyrest-relay ./cmd/relay/
-#   (repeat with GOARCH=arm64 for ARM servers, then commit bin/)
+#       -o ../bin/linux-amd64/anyrest-relay  ./cmd/relay/
 
-FROM alpine:3.21
+FROM busybox:1.37-musl
 
-# CMD selects which binary to run: signal | relay  (set via docker-compose args).
+# CMD selects which binary: signal | relay  (set via docker-compose args)
 ARG CMD=signal
 
-# TARGETARCH is injected by Docker for the target platform (amd64 | arm64 | …).
-# Defaults to amd64 so plain `docker build` works without --platform.
+# TARGETARCH is injected by Docker (amd64 | arm64). Default: amd64.
 ARG TARGETARCH=amd64
 
-RUN apk add --no-cache ca-certificates wget
-
-# Copy the pre-built binary for the correct architecture.
+# No apk add — busybox already has wget and nc built-in.
 COPY bin/linux-${TARGETARCH}/anyrest-${CMD} /anyrest-server
 RUN chmod +x /anyrest-server
 

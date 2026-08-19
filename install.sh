@@ -203,8 +203,10 @@ pull_with_retry() {
 }
 
 pull_base_images() {
-  info "Загружаю базовые Docker-образы (~48 MB)..."
-  pull_with_retry "alpine:3.21"
+  info "Загружаю базовые Docker-образы..."
+  # busybox — база для signal/relay (без apk, wget встроен)
+  pull_with_retry "busybox:1.37-musl"
+  # nginx — база для web-сервера
   pull_with_retry "nginx:1.27-alpine"
   ok "Базовые образы загружены."
 }
@@ -346,7 +348,8 @@ start_agent() {
   signal_url=$(grep ANYREST_SIGNAL_URL "$INSTALL_DIR/.env" 2>/dev/null \
     | cut -d= -f2 || echo "wss://${SERVER_IP}/ws")
 
-  # Загружаем только alpine (~8 MB) — golang больше не нужен
+  # Агент использует alpine (нужен xdotool из apk)
+  # Если Alpine CDN недоступен — установите агент вручную через git clone
   pull_with_retry "alpine:3.21"
 
   TARGETARCH="$ARCH" ANYREST_SIGNAL_URL="$signal_url" \

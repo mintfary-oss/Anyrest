@@ -160,7 +160,39 @@ Go-код прямо в контейнере. Образ golang весит ~300 
 
 ---
 
-## #17 — CGO_ENABLED в agent — кросс-компиляция
+## #18 — `apk add` зависает на 30+ минут (Alpine CDN заблокирован в России)
+
+**Ошибка:** Docker сборка зависает на шаге `2/4` сервиса `signal`, 1800+ секунд — без прогресса.
+
+**Причина:** `Dockerfile.server` использовал `FROM alpine:3.21` + `RUN apk add --no-cache ca-certificates wget`.
+`apk add` подключается к `dl-cdn.alpinelinux.org` — этот CDN недоступен или заблокирован на многих серверах в России.
+Соединение висит без ответа, timeout не срабатывает (Docker не ограничивает время `RUN`).
+
+**Исправление:**
+
+1. **`Dockerfile.server`** — заменён базовый образ с `alpine:3.21` на `busybox:1.37-musl`:
+   - `busybox:1.37-musl` уже включает `wget` и `nc` как встроенные аплеты BusyBox
+   - `apk add` полностью убран — **никаких сетевых запросов при сборке**
+   - `ca-certificates` не нужен: signal/relay — серверы, не делают исходящих TLS соединений
+   - Бинарник `CGO_ENABLED=0` — полностью статический, работает без libc
+   - Время сборки: 30+ минут → **~3 секунды**
+
+2. **`Dockerfile.agent`** — добавлено зеркало Яндекса для Alpine:
+   ```dockerfile
+   RUN echo "https://mirror.yandex.ru/mirrors/alpine/v3.21/main" > /etc/apk/repositories && \
+       echo "https://mirror.yandex.ru/mirrors/alpine/v3.21/community" >> /etc/apk/repositories && \
+       apk add --no-cache xdotool ca-certificates
+   ```
+   Яндекс — российское зеркало Alpine, работает без блокировок.
+
+3. **`install.sh`** — обновлён `pull_base_images()`: `alpine:3.21` → `busybox:1.37-musl`
+
+**Итог:**
+| | До | После |
+|--|----|----|
+| Dockerfile.server base | alpine:3.21 + apk add | busybox:1.37-musl (нет apk) |
+| Сборка signal/relay | 30+ минут (зависание) | ~3 секунды |
+| Зависимость от Alpine CDN | ДА (блокируется в РФ) | НЕТ |
 
 **Проблема:** `kbinani/screenshot` импортирует `gen2brain/shm` с CGO.
 Кросс-компиляция с CGO требует целевой C-тулчейн.

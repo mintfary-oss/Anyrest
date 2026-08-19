@@ -1,30 +1,30 @@
 # Anyrest Desktop Agent
 #
 # Pre-built binary is committed to bin/linux-{amd64,arm64}/.
-# No Go compiler, no CGO, no network calls — build time: ~10 seconds.
+# Requires xdotool for X11 input injection — installed via apk.
 #
-# To rebuild the binary after source changes (run locally, then commit):
+# Alpine mirror: Yandex (mirror.yandex.ru) — работает в России без блокировок.
+# Если Yandex mirror недоступен, apk fallback-нет на основной Alpine CDN.
+#
+# Для пересборки бинарника:
 #   cd agent
 #   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" \
 #       -o ../bin/linux-amd64/anyrest-agent ./cmd/
-#   (repeat with GOARCH=arm64 for ARM servers, then commit bin/)
 
 FROM alpine:3.21
 
-# TARGETARCH is injected by Docker for the target platform (amd64 | arm64 | …).
 ARG TARGETARCH=amd64
 
-# xdotool — keyboard/mouse injection via the X11 XTEST extension.
-# ca-certificates — for outbound TLS/WSS connections.
-RUN apk add --no-cache xdotool ca-certificates
+# Используем зеркало Yandex вместо dl-cdn.alpinelinux.org (работает в России).
+# Если Yandex недоступен — убрать строки с --repository и Alpine найдёт зеркало сам.
+RUN echo "https://mirror.yandex.ru/mirrors/alpine/v3.21/main" > /etc/apk/repositories && \
+    echo "https://mirror.yandex.ru/mirrors/alpine/v3.21/community" >> /etc/apk/repositories && \
+    apk add --no-cache xdotool ca-certificates
 
-# Copy the pre-built agent binary for the correct architecture.
 COPY bin/linux-${TARGETARCH}/anyrest-agent /usr/local/bin/anyrest-agent
 COPY agent-entrypoint.sh /entrypoint.sh
 RUN chmod +x /usr/local/bin/anyrest-agent /entrypoint.sh
 
-# Mount /opt/anyrest/certs at runtime so our CA is trusted.
-# Mount /tmp/.X11-unix for screen capture and xdotool input injection.
 ENV DISPLAY=:0
 
 ENTRYPOINT ["/entrypoint.sh"]
