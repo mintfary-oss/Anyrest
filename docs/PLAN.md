@@ -26,12 +26,15 @@ Relay fall:  Agent ──TCP──► Relay ──TCP──► Browser (если
 |-----------|-----------|
 | Серверы | Go 1.26 + gorilla/websocket |
 | WebRTC агент | pion/webrtc v4 |
-| Захват экрана | kbinani/screenshot (X11/DXGI/CoreGraphics) |
-| Ввод (Linux) | xdotool (X11 XTEST) |
+| Захват экрана | kbinani/screenshot (X11/GDI/CoreGraphics — кросс-платформенный) |
+| Ввод Linux | xdotool (X11 XTEST) |
+| **Ввод Windows** | **Win32 SendInput (user32.dll, pure Go, без CGO)** |
 | Веб-клиент | React 19 + TypeScript 6 + Vite 8 |
 | Сертификаты | OpenSSL (IP-SAN, 4096 bit) |
 | Контейнеры | Docker Compose + NGINX 1.27 |
+| STUN/ICE | Google + stunprotocol.org + ekiga.net (5 серверов, РФ-доступные) |
 | Node.js | **Только для локальной сборки** — на сервере не нужен |
+| Windows установщик | PowerShell (install.ps1) + Go exe (anyrest-installer.exe) |
 
 ---
 
@@ -165,8 +168,10 @@ anyrest/
 │       └── input/
 │           ├── input.go
 │           ├── input_linux.go
+│           ├── input_windows.go    ← Win32 SendInput (новое)
 │           ├── input_stub.go
 │           ├── factory_linux.go
+│           ├── factory_windows.go  ← новое
 │           └── factory_other.go
 ├── web/                            # React + TypeScript
 │   ├── src/
@@ -178,12 +183,15 @@ anyrest/
 ├── certs/gen-certs.sh
 ├── nginx/nginx.conf
 ├── bin/                            # ← Pre-built Go binaries (committed to repo)
-│   ├── linux-amd64/anyrest-signal  # 6.5 MB — x86_64
-│   ├── linux-amd64/anyrest-relay   # 2.6 MB — x86_64
-│   ├── linux-amd64/anyrest-agent   # 11 MB  — x86_64
-│   ├── linux-arm64/anyrest-signal  # 6.0 MB — ARM64
-│   ├── linux-arm64/anyrest-relay   # 2.4 MB — ARM64
-│   └── linux-arm64/anyrest-agent   # 10 MB  — ARM64
+│   ├── linux-amd64/anyrest-signal     # 6.5 MB — x86_64
+│   ├── linux-amd64/anyrest-relay      # 2.6 MB — x86_64
+│   ├── linux-amd64/anyrest-agent      # 11 MB  — x86_64
+│   ├── linux-arm64/anyrest-signal     # 6.0 MB — ARM64
+│   ├── linux-arm64/anyrest-relay      # 2.4 MB — ARM64
+│   ├── linux-arm64/anyrest-agent      # 10 MB  — ARM64
+│   └── windows-amd64/
+│       ├── anyrest-agent.exe          # 11 MB  — Windows x64 (SendInput)
+│       └── anyrest-installer.exe      # 2.1 MB — Windows установщик (embedded PS1)
 ├── Dockerfile.server               # COPY-only → Alpine (no Go compiler!)
 ├── Dockerfile.web                  # NGINX-only (no npm!)
 ├── Dockerfile.agent                # COPY-only → Alpine + xdotool (no Go compiler!)

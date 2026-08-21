@@ -80,6 +80,31 @@ func DisplayCount() int {
 	return screenshot.NumActiveDisplays()
 }
 
+// DisplaySize returns the actual pixel dimensions of the display at the given
+// index (0 = primary). Used for converting normalised (0–1) viewer coordinates
+// into absolute screen pixel coordinates for input injection.
+// Falls back to 1920×1080 when the display cannot be queried.
+func DisplaySize(displayIdx int) (w, h int) {
+	n := screenshot.NumActiveDisplays()
+	if n == 0 {
+		return 1920, 1080
+	}
+	idx := displayIdx
+	if idx >= n {
+		idx = 0
+	}
+	b := screenshot.GetDisplayBounds(idx)
+	w = b.Max.X - b.Min.X
+	h = b.Max.Y - b.Min.Y
+	if w <= 0 {
+		w = 1920
+	}
+	if h <= 0 {
+		h = 1080
+	}
+	return
+}
+
 // scaleDown returns a scaled-down version of src if it exceeds maxW×maxH.
 // If src is already within bounds, it is returned unchanged.
 func scaleDown(src image.Image, maxW, maxH int) image.Image {

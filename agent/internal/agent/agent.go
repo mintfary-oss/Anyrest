@@ -235,9 +235,16 @@ func (a *Agent) handle(ctx context.Context, conn *websocket.Conn, msg signalMsg)
 
 // startSession creates a WebRTC peer connection for a viewer and sends an offer.
 func (a *Agent) startSession(ctx context.Context, conn *websocket.Conn, viewerID string) {
+	// Multiple STUN servers for reliability — Google may be blocked in Russia.
+	// stunprotocol.org and ekiga.net are widely accessible alternatives.
 	iceServers := []webrtc.ICEServer{
-		{URLs: []string{"stun:stun.l.google.com:19302"}},
-		{URLs: []string{"stun:stun1.l.google.com:19302"}},
+		{URLs: []string{
+			"stun:stun.l.google.com:19302",
+			"stun:stun1.l.google.com:19302",
+			"stun:stun.stunprotocol.org:3478",
+			"stun:stun.ekiga.net:3478",
+			"stun:stun.ideasip.com:3478",
+		}},
 	}
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{
 		ICEServers: iceServers,
@@ -389,14 +396,10 @@ func (a *Agent) handleInput(data []byte) {
 		return
 	}
 
-	w := a.cfg.DisplayW
-	h := a.cfg.DisplayH
-	if w <= 0 {
-		w = 1920
-	}
-	if h <= 0 {
-		h = 1080
-	}
+	// Always use actual display bounds so coordinates are correct regardless
+	// of the resolution the viewer is displaying at.
+	// capture.DisplaySize falls back to 1920×1080 if no display is found.
+	w, h := capture.DisplaySize(a.cfg.DisplayIdx)
 	absX := int(ev.NX * float64(w))
 	absY := int(ev.NY * float64(h))
 

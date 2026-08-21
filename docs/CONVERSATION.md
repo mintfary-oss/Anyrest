@@ -306,3 +306,88 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ../bin/linux-
 | Документация | 4 файла | ✅ обновлена |
 
 **Итог: весь код чистый. Ни одной ошибки.**
+
+---
+
+## Сессия 13 — Windows агент + установщик, install.sh v3 с диагностикой
+
+**Запрос:**
+1. Кросс-ОС совместимость (не должно зависать как в AnyDesk при разных версиях)
+2. Авто-открытие портов при установке
+3. Проверка доступности портов снаружи
+4. Проверка блокировки ISP/браузера
+5. Подробный диагностический отчёт в терминале
+6. Авто-прерывание при зависании установки
+7. Проверка совместимости со всеми браузерами
+
+**Реализовано:**
+
+### `install.sh` v3
+- Глобальный watchdog (20 мин) + обновление STEP_NAME в main() для точного отчёта
+- `open_ports()` — автоматически открывает 80/443/8081 через ufw/firewalld/iptables
+- `check_local()` — HTTPS, HTTP redirect, WebSocket, TCP relay
+- `check_external()` — hackertarget.com nmap API + portchecker.online резерв
+- `check_isp_browser()` — DNS, исходящий HTTPS, TLS 1.2/1.3, cert IP-SAN, HSTS
+- `print_report()` — финальный отчёт ✓/✗ с объяснением каждого пункта
+
+### Windows агент
+- `input_windows.go` — Win32 `SendInput` (user32.dll) без CGO
+- `factory_windows.go` — NewDefaultInjector → WindowsInjector на Windows
+- `bin/windows-amd64/anyrest-agent.exe` (11 MB, cross-compiled)
+
+### Windows установщик
+- `install.ps1` — агент-режим (Windows Service) + сервер-режим (Docker)
+- `cmd/installer/` — Go exe с embedded PS1
+- `bin/windows-amd64/anyrest-installer.exe` (2.1 MB)
+
+---
+
+## Сессия 14 — Полный аудит и исправление критических багов
+
+**Запрос:** Запустить установку на сервере, проверить весь код, исправить все ошибки, обновить переписку.
+
+**Аудит (все сборки чистые):**
+
+| Компонент | Команда | Результат |
+|-----------|---------|-----------| 
+| Go server | `go vet + build` (amd64+arm64) | ✅ 0 ошибок |
+| Go agent | `go vet + build` (amd64+arm64+windows) | ✅ 0 ошибок |
+| Go installer | `go build` (windows/amd64) | ✅ 0 ошибок |
+| TypeScript | `tsc --noEmit + vite build` | ✅ 0 ошибок |
+| install.sh | `bash -n` | ✅ синтаксис OK |
+| gen-certs.sh | `bash -n` | ✅ синтаксис OK |
+| docker-compose.yml/agent.yml | YAML parse | ✅ OK |
+| PS1 структура | python3 parse | ✅ OK (105 фигурных скобок, баланс) |
+| Протокол Go↔TS | 12 типов | ✅ совпадение |
+
+**Найдено и исправлено 5 критических багов:**
+
+1. **`install.sh` — `((count++))` крашится при нуле** (set -e + arithmetic)
+   - `((ok_count++))` при ok_count=0 → exit code 1 → скрипт умирал на первом же успешном шаге
+   - Исправление: `ok_count=$((ok_count+1))` (работает в любом случае)
+
+2. **`install.sh` — `run_step` определён, но не вызывается**
+   - Функция `run_step` с таймаутами существовала, но `main()` вызывал функции напрямую
+   - Watchdog не знал какой шаг выполняется
+   - Исправление: заменён на `set_step()`, вызывается перед каждым шагом в main()
+
+3. **`agent.go` — координаты мыши зависели от константы 1920×1080**
+   - `handleInput` использовал `cfg.DisplayW/H` (по умолчанию 1920×1080)
+   - На экранах 2560×1440 или 4K мышь двигалась не туда
+   - Исправление: `capture.DisplaySize(displayIdx)` — запрашивает реальный размер
+
+4. **STUN-серверы — только Google (заблокированы в России)**
+   - `stun.l.google.com:19302` недоступен на многих RU-серверах
+   - WebRTC P2P не устанавливался → только relay (медленнее)
+   - Исправление: добавлены `stun.stunprotocol.org`, `stun.ekiga.net`, `stun.ideasip.com`
+
+5. **`cmd/installer/install.ps1` не синхронизирован с root `install.ps1`**
+   - Установщик .exe содержал старую версию PS1
+   - Исправление: синхронизирован + пересобран anyrest-installer.exe
+
+**Пересобранные бинарники:**
+- `bin/linux-amd64/anyrest-agent` — с исправлениями STUN + DisplaySize
+- `bin/linux-arm64/anyrest-agent` — с исправлениями STUN + DisplaySize
+- `bin/windows-amd64/anyrest-agent.exe` — с исправлениями STUN + DisplaySize + SendInput
+- `bin/windows-amd64/anyrest-installer.exe` — с обновлённым install.ps1
+- `web/dist/` — с 5 STUN серверами в webrtc.ts

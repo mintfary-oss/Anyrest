@@ -89,18 +89,9 @@ stop_watchdog() {
 
 STEP_NAME="инициализация"
 
-# ── Шаг с таймаутом ───────────────────────────────────────────────────────────
-# Выполняет команду с ограничением по времени.
-# run_step <таймаут_сек> <название> <команда...>
-run_step() {
-  local timeout="$1"
-  STEP_NAME="$2"
-  shift 2
-  info "Шаг: $STEP_NAME (таймаут ${timeout}с)..."
-  if ! timeout "$timeout" bash -c "$*" 2>&1; then
-    die "Шаг '$STEP_NAME' завис или завершился с ошибкой (таймаут ${timeout}с).\n  Попробуйте повторить или запустить с --ip <IP> если IP определился неверно."
-  fi
-}
+# ── Установка текущего шага ───────────────────────────────────────────────────
+# Обновляет STEP_NAME для watchdog и выводит прогресс.
+set_step() { STEP_NAME="$1"; info "Шаг: $STEP_NAME..."; }
 
 # ── Ловушка ошибок ─────────────────────────────────────────────────────────────
 trap 'on_error $LINENO "$BASH_COMMAND"' ERR
@@ -710,9 +701,9 @@ print_report() {
     local status="${item%%|*}"
     local msg="${item#*|}"
     case "$status" in
-      OK)   echo -e "  ${GREEN}✓${RESET} $msg";  ((ok_count++))   ;;
-      WARN) echo -e "  ${YELLOW}!${RESET} $msg";  ((warn_count++)) ;;
-      FAIL) echo -e "  ${RED}✗${RESET} $msg";  ((fail_count++)) ;;
+      OK)   echo -e "  ${GREEN}✓${RESET} $msg";  ok_count=$((ok_count+1))   ;;
+      WARN) echo -e "  ${YELLOW}!${RESET} $msg";  warn_count=$((warn_count+1)) ;;
+      FAIL) echo -e "  ${RED}✗${RESET} $msg";  fail_count=$((fail_count+1)) ;;
     esac
   done
 
@@ -768,37 +759,37 @@ main() {
 
   start_watchdog
 
-  detect_ip
-  detect_arch
-  install_docker
-  open_ports
-  configure_mirror
+  set_step "определение IP"; detect_ip
+  set_step "определение архитектуры"; detect_arch
+  set_step "установка Docker"; install_docker
+  set_step "открытие портов firewall"; open_ports
+  set_step "настройка зеркал Docker Hub"; configure_mirror
 
   if [[ "$AGENT_MODE" == "true" ]]; then
-    fetch_repo
-    create_env
-    start_agent
+    set_step "получение репозитория"; fetch_repo
+    set_step "создание .env"; create_env
+    set_step "запуск агента"; start_agent
     stop_watchdog
     echo ""
     ok "Агент запущен. ID появится в логах: docker logs anyrest-agent-1"
     return
   fi
 
-  pull_base_images
-  fetch_repo
-  generate_certs
-  install_ca
-  create_env
-  start_stack
+  set_step "загрузка базовых Docker-образов"; pull_base_images
+  set_step "получение репозитория"; fetch_repo
+  set_step "генерация TLS-сертификатов"; generate_certs
+  set_step "установка CA в систему"; install_ca
+  set_step "создание .env"; create_env
+  set_step "сборка и запуск Docker Compose"; start_stack
 
   # ── Диагностика ────────────────────────────────────────────────────────────
   echo ""
   hr
   echo -e "  ${BOLD}Запускаю диагностику...${RESET}"
   hr
-  check_local
-  check_external
-  check_isp_browser
+  set_step "диагностика локальная"; check_local
+  set_step "диагностика внешняя"; check_external
+  set_step "диагностика ISP/браузер"; check_isp_browser
 
   stop_watchdog
   print_report
