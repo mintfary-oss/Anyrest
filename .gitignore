@@ -2,6 +2,8 @@
 /server/bin/
 /agent/bin/
 *.exe
+# But track pre-built Windows binaries in bin/
+!bin/**/*.exe
 
 # Certificates (generated at runtime, do not commit private keys)
 certs/*.pem

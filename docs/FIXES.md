@@ -200,3 +200,107 @@ Go-код прямо в контейнере. Образ golang весит ~300 
 **Решение:** `CGO_ENABLED=0 GOOS=linux GOARCH=amd64` — Go использует чистый X11 backend
 (jezek/xgb), gen2brain/shm имеет pure-Go fallback. Бинарник статически слинкован,
 не зависит от libc, запускается в `FROM scratch` или alpine без доп. библиотек.
+
+---
+
+## #19 — Установка зависала на apk/npm — watchdog не было
+
+**Ошибка:** При медленном интернете или заблокированных CDN установка висла 45+ минут без вывода ошибки.
+Пользователь не знал что делать — убивать ли процесс или ждать.
+
+**Исправление в `install.sh` v3:**
+- Глобальный watchdog-процесс: `(sleep 1200; kill -TERM $PPID) &` — автоматически прерывает через 20 мин
+- Каждый шаг обёрнут в `run_step <таймаут_сек>` через команду `timeout`
+- При срабатывании watchdog выводится имя зависшего шага и команда для проверки логов
+- Ловушка `trap on_error ERR` — любая ошибка вызывает финальный отчёт перед выходом
+
+---
+
+## #20 — Порты не открывались автоматически
+
+**Проблема:** После успешной установки браузер не мог открыть `https://IP` — порты 80/443 были закрыты
+системным firewall (ufw/firewalld/iptables). Пользователь не знал что нужно открывать порты вручную.
+
+**Исправление:** Добавлена функция `open_ports()` в `install.sh`, вызываемая до запуска Docker:
+- `ufw allow 80/tcp && ufw allow 443/tcp && ufw allow 8081/tcp` (если ufw активен)
+- `firewall-cmd --permanent --add-port=...` + `reload` (если firewalld активен)
+- `iptables -I INPUT -p tcp --dport ... -j ACCEPT` (fallback, все дистрибутивы)
+- Сохранение правил через `netfilter-persistent` / `iptables-save`
+
+---
+
+## #21 — Нет диагностики после установки
+
+**Проблема:** Установка завершалась просто с сообщением "открыть https://IP".
+Если что-то не работало — пользователь не знал причину (провайдер? firewall? сертификат?).
+
+**Исправление:** Добавлена полная диагностика после запуска стека:
+
+1. **`check_local()`** — локальная проверка:
+   - `curl -fsSk https://$IP/health` — HTTPS endpoint
+   - HTTP redirect code — редирект 80→443
+   - WebSocket handshake — `Sec-WebSocket-Key` через curl
+   - TCP relay — `nc -z $IP 8081`
+
+2. **`check_external()`** — внешняя видимость:
+   - `api.hackertarget.com/nmap/?q=$IP&port=$PORT` — сканирует порты снаружи
+   - `portchecker.online/api/v1/query` — резервный API
+   - Раздельно: 443 (критично), 8081 (relay), 80 (не критично)
+
+3. **`check_isp_browser()`** — блокировки и совместимость браузеров:
+   - Исходящий HTTPS: `curl https://dns.google`
+   - DNS разрешение: `getent hosts github.com`
+   - Сертификат: IP-SAN проверка, алгоритм подписи (SHA-256 vs SHA-1)
+   - TLS 1.2/1.3: `openssl s_client -tls1_2 / -tls1_3`
+   - HSTS и X-Content-Type-Options заголовки
+   - WebSocket Upgrade: HTTP 101 ответ
+
+4. **`print_report()`** — финальный отчёт ✓/✗ по каждому пункту с объяснением.
+
+---
+
+## #22 — Агент не поддерживал Windows (StubInjector)
+
+**Проблема:** На Windows агент запускался, захватывал экран, но ввод (мышь/клавиатура)
+не инжектировался — `StubInjector` возвращал `errUnsupported` на всё.
+Соединение между Windows и Linux ломалось на уровне управления (AnyDesk-подобная проблема).
+
+**Исправление:**
+1. Создан `agent/internal/input/input_windows.go` — реализация через Win32 `SendInput` (user32.dll):
+   - Без CGO: `syscall.NewLazyDLL("user32.dll")` + pure Go struct packing
+   - `MouseMove` — абсолютные координаты (нормализация в 0–65535)
+   - `MouseDown/Up` — left/middle/right через MOUSEEVENTF_*DOWN/UP
+   - `Scroll` — `MOUSEEVENTF_WHEEL` и `MOUSEEVENTF_HWHEEL`
+   - `KeyDown/KeyUp` — таблица JavaScript key → Win32 VK code, Unicode fallback
+   - `screenSize()` через `GetSystemMetrics(SM_CXSCREEN/SM_CYSCREEN)`
+
+2. Создан `agent/internal/input/factory_windows.go` — `NewDefaultInjector()` → `WindowsInjector`
+
+3. Обновлены build tags:
+   - `factory_other.go`: `!linux` → `!linux && !windows`
+   - `input_stub.go`: `!linux` → `!linux && !windows`
+
+4. Кросс-компиляция успешна:
+   ```
+   CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build → anyrest-agent.exe (11 MB)
+   ```
+
+5. Скриншот: `kbinani/screenshot` уже поддерживал Windows через `lxn/win` (pure Go Win32 GDI).
+
+---
+
+## #23 — Нет Windows-установщика
+
+**Проблема:** Пользователи Windows не могли автоматически установить агент.
+
+**Исправление:**
+1. `install.ps1` — PowerShell установщик:
+   - `-AgentOnly` (по умолчанию): скачивает `anyrest-agent.exe`, устанавливает как Windows Service
+   - `-ServerMode`: Docker Desktop + Docker Compose + firewall + certs
+   - Автоматически открывает порты через `New-NetFirewallRule`
+   - Диагностика: DNS, HTTPS, TCP проверки
+
+2. `cmd/installer/main.go` — Go-программа с `//go:embed install.ps1`:
+   - Пишет PS1 во временный файл, запускает через `powershell.exe -ExecutionPolicy Bypass`
+   - Кросс-компиляция: `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build` → `anyrest-installer.exe` (2.1 MB)
+   - Пользователь двойным кликом запускает .exe — больше ничего не нужно
