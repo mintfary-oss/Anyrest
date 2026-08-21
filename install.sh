@@ -495,10 +495,14 @@ check_local() {
 
   # WebSocket endpoint (через curl WS handshake)
   local ws_code
-  ws_code=$(curl -fsSo /dev/null --max-time 5 -w "%{http_code}" -k \
+  # curl записывает http_code до завершения; при WebSocket таймауте добавляется
+  # суффикс из ветки ||, что даёт "101000" вместо "101" — берём первые 3 символа.
+  ws_code=$(curl -sSo /dev/null --max-time 4 -w "%{http_code}" -k \
     -H "Connection: Upgrade" -H "Upgrade: websocket" \
     -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
-    "https://$SERVER_IP/ws" 2>/dev/null || echo "000")
+    "https://$SERVER_IP/ws" 2>/dev/null || true)
+  ws_code="${ws_code:0:3}"
+  [[ -z "$ws_code" ]] && ws_code="000"
   if [[ "$ws_code" =~ ^(101|200|400)$ ]]; then
     ok "WebSocket: wss://$SERVER_IP/ws → handshake OK (код $ws_code)."
   else
@@ -668,10 +672,12 @@ check_isp_browser() {
 
   # ── Проверка WebSocket upgrade ────────────────────────────────────────────
   local ws_status
-  ws_status=$(curl -fsSo /dev/null --max-time 5 -w "%{http_code}" -k \
+  ws_status=$(curl -sSo /dev/null --max-time 4 -w "%{http_code}" -k \
     -H "Connection: Upgrade" -H "Upgrade: websocket" \
     -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
-    "https://$SERVER_IP/ws" 2>/dev/null || echo "000")
+    "https://$SERVER_IP/ws" 2>/dev/null || true)
+  ws_status="${ws_status:0:3}"
+  [[ -z "$ws_status" ]] && ws_status="000"
   if [[ "$ws_status" == "101" ]]; then
     ok "WebSocket Upgrade: сервер возвращает 101 — браузеры откроют WSS соединение."
   elif [[ "$ws_status" =~ ^[2-4] ]]; then
