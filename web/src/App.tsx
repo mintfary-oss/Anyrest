@@ -1,27 +1,33 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { SignalingClient } from './lib/signaling';
 import { WebRTCViewer } from './lib/webrtc';
-import type { ViewerState } from './lib/webrtc';
+import type { ViewerState, DiagStats } from './lib/webrtc';
 import type { InputEvent } from './lib/protocol';
 import { ConnectForm } from './components/ConnectForm';
 import { RemoteScreen } from './components/RemoteScreen';
 import { StatusBar } from './components/StatusBar';
 import { HelpPage } from './components/HelpPage';
+import { ConnectedToolbar } from './components/ConnectedToolbar';
+import { DiagnosticsPanel } from './components/DiagnosticsPanel';
 
 const SIGNAL_URL =
   (window as Window & { ANYREST_SIGNAL_URL?: string }).ANYREST_SIGNAL_URL ??
   `wss://${window.location.host}/ws`;
 
 export const App: React.FC = () => {
-  const [signalingOk, setSignalingOk] = useState(false);
-  const [myId, setMyId] = useState<string | null>(null);
-  const [viewerState, setViewerState] = useState<ViewerState>('idle');
-  const [frameUrl, setFrameUrl] = useState<string | null>(null);
-  const [remotePeerId, setRemotePeerId] = useState<string | null>(null);
-  const [showHelp, setShowHelp] = useState(false);
+  const [signalingOk, setSignalingOk]     = useState(false);
+  const [myId, setMyId]                   = useState<string | null>(null);
+  const [viewerState, setViewerState]     = useState<ViewerState>('idle');
+  const [frameUrl, setFrameUrl]           = useState<string | null>(null);
+  const [remotePeerId, setRemotePeerId]   = useState<string | null>(null);
+  const [showHelp, setShowHelp]           = useState(false);
+  const [showDiag, setShowDiag]           = useState(false);
+  const [diagStats, setDiagStats]         = useState<DiagStats | null>(null);
+  const [frameCount, setFrameCount]       = useState(0);
 
   const signalingRef = useRef<SignalingClient | null>(null);
-  const viewerRef = useRef<WebRTCViewer | null>(null);
+  const viewerRef    = useRef<WebRTCViewer | null>(null);
+  const frameCountRef = useRef(0);
 
   // ── Boot ─────────────────────────────────────────────────────────────────
 
@@ -40,14 +46,27 @@ export const App: React.FC = () => {
 
     const viewer = new WebRTCViewer(
       sig,
+      // State change handler
       (state) => {
         setViewerState(state);
         if (state === 'disconnected' || state === 'failed') {
           setFrameUrl(null);
           setRemotePeerId(null);
+          setDiagStats(null);
+          setFrameCount(0);
+          frameCountRef.current = 0;
+          setShowDiag(false);
         }
       },
-      (url) => setFrameUrl(url),
+      // Frame handler — also tracks frame count
+      (url) => {
+        setFrameUrl(url);
+        frameCountRef.current += 1;
+        setFrameCount(frameCountRef.current);
+      },
+      // Stats handler
+      (stats) => setDiagStats(stats),
+      SIGNAL_URL,
     );
     viewerRef.current = viewer;
 
@@ -55,10 +74,13 @@ export const App: React.FC = () => {
     return () => { sig.disconnect(); };
   }, []);
 
-  // Close help on Escape
+  // Close help/diag on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setShowHelp(false);
+      if (e.key === 'Escape') {
+        setShowHelp(false);
+        setShowDiag(false);
+      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -76,16 +98,40 @@ export const App: React.FC = () => {
     setRemotePeerId(null);
     setFrameUrl(null);
     setViewerState('idle');
+    setDiagStats(null);
+    setFrameCount(0);
+    frameCountRef.current = 0;
+    setShowDiag(false);
   }, []);
 
   const handleInput = useCallback((event: InputEvent) => {
     viewerRef.current?.sendInput(event);
   }, []);
 
+  const handleToggleDiag = useCallback(() => {
+    setShowDiag((v) => !v);
+    setShowHelp(false);
+  }, []);
+
   // ── Render ────────────────────────────────────────────────────────────────
 
-  const isConnected = viewerState === 'connected';
-  const serverHost = window.location.host || 'localhost';
+  const isConnected  = viewerState === 'connected';
+  const serverHost   = window.location.host || 'localhost';
+
+  // Stats to show in the panel: live stats or a skeleton while connecting
+  const panelStats: DiagStats = diagStats ?? {
+    pcState: viewerState === 'connecting' ? 'connecting' : 'none',
+    iceState: 'none',
+    dcState: 'none',
+    candidateType: 'unknown',
+    rttMs: -1,
+    fps: 0,
+    bytesReceived: 0,
+    bandwidthKBps: 0,
+    remotePeerId: remotePeerId ?? '',
+    signalUrl: SIGNAL_URL,
+    connectionType: 'Нет подключения',
+  };
 
   return (
     <div className="app">
@@ -94,15 +140,31 @@ export const App: React.FC = () => {
           <span className="logo-icon">⬡</span>
           <span className="logo-text">Anyrest</span>
         </div>
+
         <StatusBar
           signalingConnected={signalingOk}
           viewerState={viewerState}
           remotePeerId={remotePeerId}
           onDisconnect={handleDisconnect}
         />
+
+        {/* Diagnostics button — always visible */}
+        <button
+          className={`toolbar-btn header-diag-btn${showDiag ? ' active' : ''}`}
+          onClick={handleToggleDiag}
+          title="Диагностика соединения"
+        >
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5"/>
+            <path d="M8 5v3l2 2" stroke="currentColor" strokeWidth="1.5"
+                  strokeLinecap="round"/>
+          </svg>
+          Диагностика
+        </button>
+
         <button
           className="help-btn"
-          onClick={() => setShowHelp(true)}
+          onClick={() => { setShowHelp(true); setShowDiag(false); }}
           title="Руководство пользователя"
         >
           ?
@@ -110,6 +172,7 @@ export const App: React.FC = () => {
       </header>
 
       <main className="app-main">
+        {/* Sidebar — shown only when not in a session */}
         {!isConnected && (
           <div className="sidebar">
             <ConnectForm
@@ -138,13 +201,37 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        <RemoteScreen
-          frameUrl={frameUrl}
-          onInput={handleInput}
-          active={isConnected}
-        />
+        {/* Remote screen — fills remaining space */}
+        <div className="remote-screen-wrap">
+          <RemoteScreen
+            frameUrl={frameUrl}
+            onInput={handleInput}
+            active={isConnected}
+          />
+
+          {/* Auto-hiding toolbar over the remote screen */}
+          <ConnectedToolbar
+            active={isConnected}
+            remotePeerId={remotePeerId ?? ''}
+            onDisconnect={handleDisconnect}
+            onToggleDiag={handleToggleDiag}
+            diagOpen={showDiag}
+          />
+        </div>
       </main>
 
+      {/* Diagnostics overlay */}
+      {showDiag && (
+        <DiagnosticsPanel
+          stats={panelStats}
+          viewerState={viewerState}
+          signalingOk={signalingOk}
+          frameCount={frameCount}
+          onClose={() => setShowDiag(false)}
+        />
+      )}
+
+      {/* Help overlay */}
       {showHelp && (
         <HelpPage
           onClose={() => setShowHelp(false)}
