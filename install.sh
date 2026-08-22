@@ -165,16 +165,64 @@ install_docker() {
     return
   fi
   info "Устанавливаю Docker (таймаут 5 мин)..."
-  # get.docker.com — официальный скрипт, поддерживает Ubuntu/Debian/RHEL/CentOS
+
+  # ── Определяем дистрибутив ─────────────────────────────────────────────────
+  local os_id=""
+  if [[ -f /etc/os-release ]]; then
+    os_id=$(. /etc/os-release && echo "${ID:-}")
+  fi
+  [[ -f /etc/gentoo-release ]] && os_id="gentoo"
+
+  # ── Gentoo (Portage / emerge) ──────────────────────────────────────────────
+  if [[ "$os_id" == "gentoo" ]] || command -v emerge &>/dev/null; then
+    info "Gentoo обнаружена — устанавливаю через emerge..."
+    # Синхронизируем дерево portage если оно старше 24 часов
+    if [[ ! -f /usr/portage/metadata/timestamp.chk ]] || \
+       [[ $(find /usr/portage/metadata/timestamp.chk -mtime +1 2>/dev/null) ]]; then
+      timeout 300 $SUDO emerge --sync --quiet 2>/dev/null || true
+    fi
+    timeout 600 $SUDO emerge --ask=n --quiet \
+      app-containers/docker \
+      app-containers/docker-cli \
+      app-containers/docker-compose \
+      || die "Не удалось установить Docker на Gentoo. Запустите: emerge app-containers/docker"
+    # OpenRC (по умолчанию на Gentoo) или systemd
+    if command -v rc-update &>/dev/null; then
+      $SUDO rc-update add docker default 2>/dev/null || true
+      $SUDO rc-service docker start 2>/dev/null || true
+      ok "Docker запущен через OpenRC."
+    elif command -v systemctl &>/dev/null; then
+      $SUDO systemctl enable --now docker 2>/dev/null || true
+      ok "Docker запущен через systemd."
+    fi
+    ok "Docker установлен на Gentoo."
+    return
+  fi
+
+  # ── Alpine (apk) ───────────────────────────────────────────────────────────
+  if command -v apk &>/dev/null; then
+    timeout 300 $SUDO apk add --no-cache docker docker-compose 2>/dev/null \
+      || die "Не удалось установить Docker на Alpine."
+    $SUDO rc-update add docker boot 2>/dev/null || true
+    $SUDO service docker start 2>/dev/null || true
+    ok "Docker установлен на Alpine."
+    return
+  fi
+
+  # ── Ubuntu / Debian / RHEL / CentOS — официальный скрипт ──────────────────
   if ! timeout 300 bash -c 'curl -fsSL https://get.docker.com | bash -s -- --quiet' 2>&1 \
       | grep -E 'Installing|installed|already' || true; then
-    # Попытка установки через пакетный менеджер
     if command -v apt-get &>/dev/null; then
-      timeout 300 bash -c 'apt-get install -y docker.io docker-compose-plugin' || die "Не удалось установить Docker"
+      timeout 300 $SUDO apt-get install -y docker.io docker-compose-plugin \
+        || die "Не удалось установить Docker"
+    elif command -v dnf &>/dev/null; then
+      timeout 300 $SUDO dnf install -y docker docker-compose-plugin \
+        || die "Не удалось установить Docker"
     elif command -v yum &>/dev/null; then
-      timeout 300 bash -c 'yum install -y docker docker-compose-plugin' || die "Не удалось установить Docker"
+      timeout 300 $SUDO yum install -y docker docker-compose-plugin \
+        || die "Не удалось установить Docker"
     else
-      die "Не удалось установить Docker. Установите вручную: https://docs.docker.com/engine/install/"
+      die "Дистрибутив не распознан. Установите Docker вручную: https://docs.docker.com/engine/install/"
     fi
   fi
   if command -v systemctl &>/dev/null; then
